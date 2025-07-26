@@ -3,12 +3,19 @@ import { getComputer } from '@/lib/orgo'
 
 export const runtime = 'nodejs'
 
-// Share the same conversation cache as play route
-type Conv = { instruction: string; running: boolean };
+// Enhanced conversation cache for step-by-step execution
+type Conv = { 
+  instruction: string; 
+  running: boolean;
+  currentStep: number;
+  totalSteps: number;
+  conversationHistory: any[];
+  lastResponse: any;
+};
 const conversations = new Map<string, Conv>();
 
 export async function POST(request: NextRequest) {
-  const { instruction, convId } = await request.json()
+  const { instruction, convId, conversationHistory = [] } = await request.json()
   
   if (!instruction && !convId) {
     return NextResponse.json({ error: "Instruction or conversation ID is required" }, { status: 400 })
@@ -17,12 +24,24 @@ export async function POST(request: NextRequest) {
   // Generate or use existing conversation ID
   const id = convId ?? crypto.randomUUID()
   let conv = conversations.get(id)
+  
   if (!conv) {
     if (!instruction) {
       return NextResponse.json({ error: "Instruction required for new conversation" }, { status: 400 })
     }
-    conv = { instruction, running: false }
+    // Initialize new conversation
+    conv = { 
+      instruction, 
+      running: false,
+      currentStep: 0,
+      totalSteps: 0,
+      conversationHistory: [],
+      lastResponse: null
+    }
     conversations.set(id, conv)
+  } else {
+    // Update conversation history from frontend
+    conv.conversationHistory = conversationHistory
   }
 
   if (conv.running) {
@@ -41,9 +60,13 @@ export async function POST(request: NextRequest) {
         const sendScreenshot = async () => {
           try {
             const screenshot = await computer.screenshotBase64()
-            controller.enqueue(
-              `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
-            )
+            try {
+              controller.enqueue(
+                `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
+              )
+            } catch (error) {
+              console.log("Controller closed, cannot send screenshot")
+            }
           } catch (error) {
             console.error("Failed to take screenshot:", error)
           }
@@ -53,30 +76,77 @@ export async function POST(request: NextRequest) {
         await sendScreenshot()
 
         // Create progress callback for streaming events
-        const progressCallback = (eventType: string, eventData: any) => {
-          controller.enqueue(
-            `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
-          )
+        const progressCallback = async (eventType: string, eventData: any) => {
+          try {
+            controller.enqueue(
+              `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
+            )
+          } catch (error) {
+            console.log("Controller already closed, skipping event:", eventType)
+            return
+          }
+          
+          // Track conversation history
+          if (eventType === 'tool_use' || eventType === 'text') {
+            conv!.conversationHistory.push({
+              step: conv!.currentStep,
+              type: eventType,
+              data: eventData,
+              timestamp: new Date().toISOString()
+            })
+          }
           
           // Take screenshot after tool_use events
           if (eventType === 'tool_use') {
-            setTimeout(async () => {
+            await new Promise(resolve => setTimeout(resolve, 500)) // Fixed delay for step-by-step
+            try {
               await sendScreenshot()
-            }, 500) // Fixed delay for step-by-step
+            } catch (error) {
+              console.log("Failed to send screenshot after delay:", error instanceof Error ? error.message : String(error))
+            }
           }
         }
 
         // Execute the instruction with Orgo (single step)
+        conv!.currentStep += 1
+        
+        // Build the instruction with detailed context
+        let fullInstruction = conv!.instruction
+        
+        if (conv!.conversationHistory.length > 0) {
+          const historySummary = conv!.conversationHistory
+            .map((entry, index) => `Step ${index + 1}: ${entry.type} - ${JSON.stringify(entry.data)}`)
+            .join('\n')
+          
+          fullInstruction = `${conv!.instruction}
+
+PREVIOUS STEPS COMPLETED (${conv!.conversationHistory.length} steps):
+${historySummary}
+
+CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the next logical action to complete the task.`
+        }
+        
+        console.log(`Executing step ${conv!.currentStep} for conversation ${id}`)
+        
         await computer.prompt({ 
-          instruction: conv!.instruction,
+          instruction: fullInstruction,
           callback: progressCallback,
-          maxIterations: 1, // Only one step
+          maxIterations: 3, // Take 2 steps per forward click
           maxTokens: 4096
         })
 
-        // Send completion event
+        // Take final screenshot before completion
+        await sendScreenshot()
+
+        // Send completion event with step information and updated history
         controller.enqueue(
-          `event: step_complete\ndata:${JSON.stringify({ message: "Step completed" })}\n\n`
+          `event: step_complete\ndata:${JSON.stringify({ 
+            message: "Step completed",
+            currentStep: conv!.currentStep,
+            totalHistory: conv!.conversationHistory.length,
+            hasMoreWork: conv!.conversationHistory.length < 10, // Arbitrary limit to prevent infinite loops
+            conversationHistory: conv!.conversationHistory // Send back the updated history
+          })}\n\n`
         )
 
       } catch (error) {
@@ -100,21 +170,25 @@ export async function POST(request: NextRequest) {
   })
 }
 
-// Keep the GET method for backward compatibility
+// GET method to check conversation status
 export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams
-  const speed = searchParams.get("speed") || "50"
+  const { searchParams } = new URL(request.url)
+  const convId = searchParams.get('convId')
 
-  try {
-    console.log(`Forwarding demo at speed: ${speed}`)
-
-    return NextResponse.json({
-      success: true,
-      message: `Demo forwarded at speed ${speed}`,
-      speed: Number.parseInt(speed),
-    })
-  } catch (error) {
-    console.error("Error forwarding demo:", error)
-    return NextResponse.json({ error: "Failed to forward demo" }, { status: 500 })
+  if (!convId) {
+    return NextResponse.json({ error: "Conversation ID required" }, { status: 400 })
   }
+
+  const conv = conversations.get(convId)
+  if (!conv) {
+    return NextResponse.json({ error: "Conversation not found" }, { status: 404 })
+  }
+
+  return NextResponse.json({
+    currentStep: conv.currentStep,
+    totalHistory: conv.conversationHistory.length,
+    hasMoreWork: conv.conversationHistory.length < 10,
+    running: conv.running,
+    instruction: conv.instruction
+  })
 }

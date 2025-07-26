@@ -37,10 +37,17 @@ export async function POST(request: NextRequest) {
         // Helper function to take and send screenshot
         const sendScreenshot = async () => {
           try {
+            console.log("Taking screenshot...")
             const screenshot = await computer.screenshotBase64()
-            controller.enqueue(
-              `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
-            )
+            console.log("Screenshot taken, length:", screenshot?.length || 0)
+            try {
+              controller.enqueue(
+                `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
+              )
+              console.log("Screenshot event sent")
+            } catch (error) {
+              console.log("Controller closed, cannot send screenshot")
+            }
           } catch (error) {
             console.error("Failed to take screenshot:", error)
           }
@@ -50,16 +57,27 @@ export async function POST(request: NextRequest) {
         await sendScreenshot()
 
         // Create progress callback for streaming events
-        const progressCallback = (eventType: string, eventData: any) => {
-          controller.enqueue(
-            `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
-          )
+        const progressCallback = async (eventType: string, eventData: any) => {
+          console.log(`Play callback: ${eventType}`, eventData)
+          try {
+            controller.enqueue(
+              `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
+            )
+          } catch (error) {
+            console.log("Controller already closed, skipping event:", eventType)
+            return
+          }
           
-          // Take screenshot after tool_use events
-          if (eventType === 'tool_use') {
-            setTimeout(async () => {
+          // Take screenshot after any action that changes the screen
+          if (eventType === 'tool_use' || eventType === 'thinking') {
+            console.log(`Taking screenshot after ${eventType} with delay ${delayMs}ms`)
+            // Use a more reliable delay mechanism
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+            try {
               await sendScreenshot()
-            }, delayMs)
+            } catch (error) {
+              console.log("Failed to send screenshot after delay:", error instanceof Error ? error.message : String(error))
+            }
           }
         }
 
@@ -67,9 +85,12 @@ export async function POST(request: NextRequest) {
         await computer.prompt({ 
           instruction: conv!.instruction,
           callback: progressCallback,
-          maxIterations: 5,
+          maxIterations: 10,
           maxTokens: 4096
         })
+
+        // Take final screenshot before completion
+        await sendScreenshot()
 
         // Send completion event
         controller.enqueue(

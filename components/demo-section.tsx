@@ -1,5 +1,5 @@
 "use client"
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { motion } from "framer-motion"
 // import { Safari } from "@/components/magicui/safari" // TODO: add this back in
 
@@ -12,7 +12,32 @@ export function DemoSection() {
   const [events, setEvents] = useState<any[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [screenshot, setScreenshot] = useState<string>('')
+  const [provider, setProvider] = useState<'anthropic' | 'groq'>('anthropic')
+  const [model, setModel] = useState<string>('claude-sonnet-4-20250514')
+  const [waitingForStep, setWaitingForStep] = useState(false)
+  const [conversationHistory, setConversationHistory] = useState<any[]>([])
   const eventSourceRef = useRef<EventSource | null>(null)
+
+  // Debug screenshot state changes
+  useEffect(() => {
+    console.log("Screenshot state changed:", screenshot ? `Length: ${screenshot.length}` : "empty")
+  }, [screenshot])
+
+  // Function to get current screenshot
+  const getCurrentScreenshot = async () => {
+    try {
+      const response = await fetch('/api/demo/screenshot')
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success && data.screenshot) {
+          console.log("Got current screenshot, length:", data.screenshot.length)
+          setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
+        }
+      }
+    } catch (error) {
+      console.error("Failed to get current screenshot:", error)
+    }
+  }
 
   const handleLaunchInde = async () => {
     setIsLoading(true)
@@ -44,6 +69,13 @@ export function DemoSection() {
     setEvents([])
     eventSourceRef.current?.close()
 
+    // Set up periodic screenshot updates
+    const screenshotInterval = setInterval(async () => {
+      if (isRunning) {
+        await getCurrentScreenshot()
+      }
+    }, 500) // Update every 2 seconds
+
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -73,27 +105,51 @@ export function DemoSection() {
         if (done) break
 
         const chunk = decoder.decode(value)
+        console.log("Received chunk:", chunk)
         const lines = chunk.split('\n')
 
         let currentEventType = ''
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             currentEventType = line.slice(7)
+            console.log("Received event type:", currentEventType)
             continue
           }
           if (line.startsWith('data:')) {
             try {
               const data = JSON.parse(line.slice(5))
+              console.log("Received event data:", { type: currentEventType, data })
               setEvents(prev => [...prev, { type: currentEventType, ...data }])
               
               // Update screenshot if available
               if (data.screenshot) {
-                setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
+                console.log("Updating screenshot from data.screenshot, length:", data.screenshot.length)
+                const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
+                console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
+                setScreenshot(newScreenshot)
               }
               
               // Handle screenshot events specifically
               if (currentEventType === 'screenshot' && data.screenshot) {
-                setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
+                console.log("Updating screenshot from screenshot event, length:", data.screenshot.length)
+                const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
+                console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
+                setScreenshot(newScreenshot)
+              }
+              
+              // Handle agent-specific events
+              if (currentEventType === 'waiting_for_step') {
+                setWaitingForStep(true)
+              } else if (currentEventType === 'conversation_complete') {
+                setWaitingForStep(false)
+              } else if (currentEventType === 'tool_executed') {
+                setWaitingForStep(false)
+              } else if (currentEventType === 'step_complete') {
+                // Update conversation history from step completion
+                if (data.conversationHistory) {
+                  console.log("Received updated conversation history:", data.conversationHistory.length, "entries")
+                  setConversationHistory(data.conversationHistory)
+                }
               }
             } catch (e) {
               console.error('Failed to parse event data:', e)
@@ -105,6 +161,9 @@ export function DemoSection() {
       console.error('Streaming error:', error)
       setEvents(prev => [...prev, { type: 'error', error: String(error) }])
     } finally {
+      clearInterval(screenshotInterval)
+      // Get final screenshot
+      await getCurrentScreenshot()
       setIsRunning(false)
     }
   }
@@ -125,8 +184,32 @@ export function DemoSection() {
   const handleForward = async () => {
     if (!inputText.trim() && !convId) return
     
+    console.log("Sending conversation history:", conversationHistory.length, "entries")
+    
     await startStreaming('/api/demo/forward', {
       instruction: inputText.trim(),
+      convId,
+      conversationHistory
+    })
+  }
+
+  const handleAgentStart = async () => {
+    if (!inputText.trim()) return
+    
+    await startStreaming('/api/demo/agent', {
+      action: 'start',
+      instruction: inputText.trim(),
+      convId,
+      model,
+      provider
+    })
+  }
+
+  const handleAgentStep = async () => {
+    if (!convId) return
+    
+    await startStreaming('/api/demo/agent', {
+      action: 'step',
       convId
     })
   }
@@ -140,6 +223,7 @@ export function DemoSection() {
         setConvId(undefined)
         setIsRunning(false)
         setScreenshot('')
+        setConversationHistory([])
         eventSourceRef.current?.close()
       }
     } catch (error) {
@@ -207,20 +291,7 @@ export function DemoSection() {
             )}
           </div>
 
-          {/* Event Stream */}
-          {events.length > 0 && (
-            <div className="mb-8 bg-slate-50 rounded-xl p-4 border-2 border-slate-200">
-              <h3 className="text-lg font-bold mb-3 text-slate-900">Event Stream</h3>
-              <div className="max-h-32 overflow-y-auto space-y-2">
-                {events.map((event, index) => (
-                  <div key={index} className="text-sm">
-                    <span className="font-mono text-blue-600">{event.type}:</span>
-                    <span className="ml-2">{event.text || event.message || JSON.stringify(event)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+
 
           {/* Control Panel */}
           <div className="flex items-center justify-between bg-slate-50 rounded-xl p-6 border-3 border-slate-200">
@@ -235,7 +306,7 @@ export function DemoSection() {
               <button
                 onClick={handleForward}
                 disabled={isRunning || (!inputText.trim() && !convId)}
-                className="w-14 h-14 inde-bg text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600 disabled:opacity-50"
+                className="w-14 h-14 bg-blue-500 text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600 disabled:opacity-50"
               >
                 {">>"}
               </button>
@@ -251,6 +322,14 @@ export function DemoSection() {
                 className="w-14 h-14 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-colors font-bold text-xl border-2 border-red-600"
               >
                 ↻
+              </button>
+              <button
+                onClick={getCurrentScreenshot}
+                disabled={!hasImage}
+                className="w-14 h-14 bg-purple-500 text-white rounded-xl flex items-center justify-center hover:bg-purple-600 transition-colors font-bold text-lg border-2 border-purple-600 disabled:opacity-50"
+                title="Refresh Screenshot"
+              >
+                📷
               </button>
             </div>
 
@@ -270,6 +349,73 @@ export function DemoSection() {
               </span>
             </div>
           </div>
+
+
+          {/* Event Stream */}
+          {events.length > 0 && (
+            <div className="mb-8 mt-16 bg-slate-50 rounded-xl p-4 border-2 border-slate-200">
+              <h3 className="text-lg font-bold mb-3 text-slate-900">Event Stream</h3>
+              <div className="max-h-32 overflow-y-auto space-y-2">
+                {events.map((event, index) => (
+                  <div key={index} className="text-sm">
+                    <span className="font-mono text-blue-600">{event.type}:</span>
+                    <span className="ml-2">{event.text || event.message || JSON.stringify(event)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+
+          {/* Agent Controls
+          <div className="mb-6 bg-blue-50 rounded-xl p-6 border-3 border-blue-200">
+            <h3 className="text-lg font-bold mb-4 text-blue-900">Advanced Agent Controls</h3>
+            <div className="flex items-center space-x-4 mb-4">
+              <div className="flex items-center space-x-2">
+                <label className="text-sm font-medium text-blue-700">Provider:</label>
+                <select
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value as 'anthropic' | 'groq')}
+                  className="px-3 py-1 border border-blue-300 rounded text-sm"
+                  disabled={isRunning}
+                >
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="groq">Groq</option>
+                </select>
+              </div>
+              <div className="flex items-center space-x-2">
+                <label className="text-sm font-medium text-blue-700">Model:</label>
+                <input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="px-3 py-1 border border-blue-300 rounded text-sm w-48"
+                  disabled={isRunning}
+                  placeholder="claude-sonnet-4-20250514"
+                />
+              </div>
+            </div>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={handleAgentStart}
+                disabled={isRunning || !inputText.trim()}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                Start Agent
+              </button>
+              <button
+                onClick={handleAgentStep}
+                // disabled={!waitingForStep}
+                className="px-6 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition-colors disabled:opacity-50"
+              >
+                Next Step
+              </button>
+              {waitingForStep && (
+                <span className="text-sm text-blue-600 font-medium">⏳ Waiting for next step...</span>
+              )}
+            </div>
+          </div> */}
+
         </div>
       </div>
     </section>
