@@ -4,11 +4,15 @@ import { getComputer } from '@/lib/orgo'
 export const runtime = 'nodejs'
 
 // In-memory conversation cache
-type Conv = { instruction: string; running: boolean };
+type Conv = { 
+  instruction: string; 
+  running: boolean;
+  provider: 'anthropic' | 'groq';
+};
 const conversations = new Map<string, Conv>();
 
 export async function POST(request: NextRequest) {
-  const { instruction, convId, delayMs = 1 } = await request.json()
+  const { instruction, convId, delayMs = 1, provider = 'anthropic' } = await request.json()
   
   if (!instruction) {
     return NextResponse.json({ error: "Instruction is required" }, { status: 400 })
@@ -18,8 +22,15 @@ export async function POST(request: NextRequest) {
   const id = convId ?? crypto.randomUUID()
   let conv = conversations.get(id)
   if (!conv) {
-    conv = { instruction, running: false }
+    conv = { 
+      instruction, 
+      running: false,
+      provider: provider as 'anthropic' | 'groq'
+    }
     conversations.set(id, conv)
+  } else {
+    // Update provider if provided
+    conv.provider = provider as 'anthropic' | 'groq'
   }
 
   if (conv.running) {
@@ -81,13 +92,112 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // Execute the instruction with Orgo
-        await computer.prompt({ 
-          instruction: conv!.instruction,
-          callback: progressCallback,
-          maxIterations: 10,
-          maxTokens: 4096
-        })
+        // Execute the instruction based on provider
+        console.log(`Executing play with provider: ${conv!.provider}`)
+        
+        if (conv!.provider === 'anthropic') {
+          // Use Orgo's computer.prompt() for Anthropic
+          await computer.prompt({ 
+            instruction: conv!.instruction,
+            callback: progressCallback,
+            maxIterations: 10,
+            maxTokens: 4096
+          })
+        } else {
+          // Use Groq with structured output (JSON schema) instead of tool calls
+          const Groq = require('groq-sdk')
+          const client = new Groq()
+          const { computerActionSchema, execTool } = await import('@/lib/tools')
+          
+          const messages: any[] = [
+            {
+              role: "system",
+              content: "You are a computer automation assistant. You control a remote desktop and can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an array of actions to execute. Each action should have the appropriate parameters (coordinates for clicks, text for typing, etc.). Always pass numeric values (not strings) for duration and scroll_amount."
+            },
+            { role: "user", content: conv!.instruction }
+          ]
+          
+          let iterations = 0
+          const maxIterations = 10
+          
+          while (iterations < maxIterations) {
+            const response = await client.chat.completions.create({
+              model: "llama-3.3-70b-versatile",
+              messages,
+              response_format: {
+                type: "json_schema",
+                json_schema: computerActionSchema.schema
+              },
+              max_tokens: 4096,
+              stream: false
+            })
+            
+            const assistantMsg = response.choices[0].message
+            
+            // Push assistant message to history
+            messages.push(assistantMsg)
+            
+            // Parse the structured output
+            let actionData
+            try {
+              actionData = JSON.parse(assistantMsg.content || "{}")
+            } catch (parseError) {
+              console.error("Failed to parse Groq response:", assistantMsg.content)
+              break
+            }
+            
+            // No actions → agent is done
+            if (!actionData.actions || actionData.actions.length === 0) {
+              break
+            }
+            
+            // Execute each action
+            for (const action of actionData.actions) {
+              try {
+                // Send tool_use event
+                controller.enqueue(
+                  `event: tool_use\ndata:${JSON.stringify({ 
+                    type: "tool_use",
+                    input: action 
+                  })}\n\n`
+                )
+                
+                // Execute the action
+                const result = await execTool(computer, action)
+                
+                // Send tool_result event
+                controller.enqueue(
+                  `event: tool_result\ndata:${JSON.stringify(result)}\n\n`
+                )
+                
+                // Add reasoning if provided
+                if (actionData.reasoning) {
+                  controller.enqueue(
+                    `event: text\ndata:${JSON.stringify({ text: actionData.reasoning })}\n\n`
+                  )
+                }
+                
+                // Take screenshot after action
+                await sendScreenshot()
+                
+                // Add delay between actions
+                await new Promise(resolve => setTimeout(resolve, delayMs))
+                
+              } catch (error) {
+                console.error("Error processing action:", error)
+                // Continue with next action instead of breaking
+              }
+            }
+            
+            // Add the results to the conversation for context
+            messages.push({
+              role: "user",
+              content: `Actions completed: ${actionData.actions.map((a: any) => a.action).join(', ')}. Continue with the next steps if needed.`
+            })
+            
+            iterations++
+          }
+        }
 
         // Take final screenshot before completion
         await sendScreenshot()

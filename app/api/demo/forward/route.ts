@@ -11,11 +11,12 @@ type Conv = {
   totalSteps: number;
   conversationHistory: any[];
   lastResponse: any;
+  provider: 'anthropic' | 'groq';
 };
 const conversations = new Map<string, Conv>();
 
 export async function POST(request: NextRequest) {
-  const { instruction, convId, conversationHistory = [] } = await request.json()
+  const { instruction, convId, conversationHistory = [], provider = 'anthropic' } = await request.json()
   
   if (!instruction && !convId) {
     return NextResponse.json({ error: "Instruction or conversation ID is required" }, { status: 400 })
@@ -36,12 +37,14 @@ export async function POST(request: NextRequest) {
       currentStep: 0,
       totalSteps: 0,
       conversationHistory: [],
-      lastResponse: null
+      lastResponse: null,
+      provider: provider as 'anthropic' | 'groq'
     }
     conversations.set(id, conv)
   } else {
     // Update conversation history from frontend
     conv.conversationHistory = conversationHistory
+    conv.provider = provider as 'anthropic' | 'groq'
   }
 
   if (conv.running) {
@@ -126,14 +129,79 @@ ${historySummary}
 CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the next logical action to complete the task.`
         }
         
-        console.log(`Executing step ${conv!.currentStep} for conversation ${id}`)
+        console.log(`Executing step ${conv!.currentStep} for conversation ${id} with provider: ${conv!.provider}`)
         
-        await computer.prompt({ 
-          instruction: fullInstruction,
-          callback: progressCallback,
-          maxIterations: 3, // Take 2 steps per forward click
-          maxTokens: 4096
-        })
+        if (conv!.provider === 'anthropic') {
+          await computer.prompt({ 
+            instruction: fullInstruction,
+            callback: progressCallback,
+            maxIterations: 3, // Take 3 steps per forward click
+            maxTokens: 4096
+          })
+        } else {
+          // Use Groq with structured output (JSON schema) instead of tool calls
+          const Groq = require('groq-sdk')
+          const client = new Groq()
+          const { computerActionSchema, execTool } = await import('@/lib/tools')
+          
+          const messages: any[] = [
+            {
+              role: "system",
+              content: "You are a computer automation assistant. You control a remote desktop and can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an array of actions to execute. Each action should have the appropriate parameters (coordinates for clicks, text for typing, etc.). Always pass numeric values (not strings) for duration and scroll_amount."
+            },
+            { role: "user", content: fullInstruction }
+          ]
+          
+          const response = await client.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages,
+            response_format: {
+              type: "json_schema",
+              json_schema: computerActionSchema.schema
+            },
+            max_tokens: 4096,
+            stream: false
+          })
+          
+          const assistantMsg = response.choices[0].message
+          
+          // Parse the structured output
+          let actionData
+          try {
+            actionData = JSON.parse(assistantMsg.content || "{}")
+          } catch (parseError) {
+            console.error("Failed to parse Groq response:", assistantMsg.content)
+            return
+          }
+          
+          // Process actions if any
+          if (actionData.actions && actionData.actions.length > 0) {
+            for (const action of actionData.actions) {
+              try {
+                // Send tool_use event
+                await progressCallback('tool_use', { type: "tool_use", input: action })
+                
+                // Execute the action
+                const result = await execTool(computer, action)
+                
+                // Send tool_result event
+                await progressCallback('tool_result', result)
+                
+                // Add to conversation history
+                conv!.conversationHistory.push({
+                  step: conv!.currentStep,
+                  type: "tool_use",
+                  data: { action: action.action, result },
+                  timestamp: new Date().toISOString()
+                })
+                
+              } catch (error) {
+                console.error("Error processing action:", error)
+                // Continue with next action instead of breaking
+              }
+            }
+          }
+        }
 
         // Take final screenshot before completion
         await sendScreenshot()

@@ -29,49 +29,7 @@ const ANTHROPIC_TOOLS = [
   }
 ] as const
 
-// Define tools for Groq (custom function)
-const GROQ_TOOLS = [
-  {
-    type: "function",
-    function: {
-      name: "computer_action",
-      description: "Execute computer actions like clicking, typing, scrolling, taking screenshots, and waiting",
-      parameters: {
-        type: "object",
-        properties: {
-          action: {
-            type: "string",
-            enum: ["screenshot", "left_click", "right_click", "double_click", "type", "key", "scroll", "wait"],
-            description: "The type of action to perform"
-          },
-          coordinate: {
-            type: "array",
-            items: { type: "number" },
-            description: "X,Y coordinates for click actions"
-          },
-          text: {
-            type: "string",
-            description: "Text to type or key to press"
-          },
-          scroll_direction: {
-            type: "string",
-            enum: ["up", "down", "left", "right"],
-            description: "Direction to scroll"
-          },
-          scroll_amount: {
-            type: "number",
-            description: "Amount to scroll"
-          },
-          duration: {
-            type: "number",
-            description: "Duration to wait in seconds"
-          }
-        },
-        required: ["action"]
-      }
-    }
-  }
-] as const
+
 
 export async function POST(request: NextRequest) {
   const { action, instruction, convId, model = "claude-sonnet-4-20250514", provider = "anthropic" } = await request.json()
@@ -330,10 +288,11 @@ async function getModelResponse(client: any, messages: any[], model: string, pro
     })
   } else {
     // Groq implementation
+    const { computerTool } = await import('@/lib/tools')
     return await client.chat.completions.create({
       model, // llama-3.3-70b-versatile
       messages,
-      tools: GROQ_TOOLS as any,
+      tools: [computerTool],
       tool_choice: "auto",
       max_tokens: 4096
     })

@@ -174,10 +174,13 @@ export function DemoSection() {
     // Convert speed to delay (inverse relationship)
     const delayMs = Math.max(100, 2000 - (speed * 20))
     
+    console.log("Playing with provider:", provider)
+    
     await startStreaming('/api/demo/play', {
       instruction: inputText.trim(),
       convId,
-      delayMs
+      delayMs,
+      provider
     })
   }
 
@@ -185,11 +188,13 @@ export function DemoSection() {
     if (!inputText.trim() && !convId) return
     
     console.log("Sending conversation history:", conversationHistory.length, "entries")
+    console.log("Using provider:", provider)
     
     await startStreaming('/api/demo/forward', {
       instruction: inputText.trim(),
       convId,
-      conversationHistory
+      conversationHistory,
+      provider
     })
   }
 
@@ -237,7 +242,7 @@ export function DemoSection() {
   }
 
   return (
-    <section id="demo" className="min-h-screen bg-slate-100 py-20">
+    <section id="demo" className="min-h-screen bg-slate-50 py-20">
       <div className="max-w-4xl mx-auto px-6">
         <motion.div
           initial={{ opacity: 0, y: 50 }}
@@ -246,12 +251,12 @@ export function DemoSection() {
           className="text-center mb-16"
         >
           <h2 className="text-5xl md:text-7xl font-black text-slate-900 mb-6">
-            Experience <span className="inde-text">Inde</span>
+            Experience <span className="text-inde">Inde</span>
           </h2>
           <p className="text-xl md:text-2xl text-slate-600 font-medium">See AI-powered computer assistance in action</p>
         </motion.div>
 
-        <div className="bg-white rounded-3xl shadow-2xl p-8 border-4 border-slate-900">
+        <div className="bg-white rounded-3xl shadow-2xl p-8 border-4 border-slate-200">
           {/* Input Text Box */}
           <div className="mb-8">
             <input
@@ -259,7 +264,7 @@ export function DemoSection() {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               placeholder="Tell Inde what you want to accomplish..."
-              className="w-full px-6 py-4 border-3 border-slate-300 rounded-xl text-lg font-medium focus:border-inde focus:outline-none transition-colors"
+              className="w-full px-6 py-4 border-2 border-slate-300 rounded-xl text-lg font-medium focus:border-inde focus:outline-none transition-colors"
               disabled={isRunning}
             />
           </div>
@@ -276,7 +281,7 @@ export function DemoSection() {
               <button
                 onClick={handleLaunchInde}
                 disabled={isLoading}
-                className="px-12 py-6 inde-bg text-white rounded-xl font-bold text-xl hover:opacity-90 transition-opacity disabled:opacity-50 border-2 border-white/20"
+                className="px-12 py-6 bg-inde text-white rounded-xl font-bold text-xl hover:bg-inde/90 transition-colors disabled:opacity-50 border-2 border-white/20"
               >
                 {isLoading ? "Launching..." : "Launch Inde"}
               </button>
@@ -294,7 +299,7 @@ export function DemoSection() {
 
 
           {/* Control Panel */}
-          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-6 border-3 border-slate-200">
+          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
             <div className="flex items-center space-x-6">
               <button
                 onClick={handlePlay}
@@ -334,19 +339,36 @@ export function DemoSection() {
             </div>
 
             <div className="flex items-center space-x-6">
-              <label className="text-slate-700 font-bold text-lg">Speed:</label>
-              <input
-                type="range"
-                min="1"
-                max="100"
-                value={speed}
-                onChange={(e) => setSpeed(Number(e.target.value))}
-                className="w-32 h-3 accent-inde"
-                disabled={isRunning}
-              />
-              <span className="text-slate-900 font-bold text-lg min-w-[3rem] text-center bg-white px-3 py-1 rounded-lg border-2 border-slate-300">
-                {speed}
-              </span>
+              <div className="flex items-center space-x-2">
+                {/* <label className="text-slate-700 font-bold text-sm">Forward Agent:</label> */}
+                <select
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value as 'anthropic' | 'groq')}
+                  className="px-3 py-1 border border-slate-300 rounded text-sm font-medium"
+                  disabled={isRunning}
+                >
+                  <option value="anthropic">Claude</option>
+                  <option value="groq">Groq</option>
+                </select>
+              </div>
+              <div className="flex items-center space-x-2">
+                <label className="text-slate-700 font-bold text-lg">Speed</label>
+                <input
+                  type="range"
+                  min="1"
+                  max="100"
+                  value={speed}
+                  onChange={(e) => setSpeed(Number(e.target.value))}
+                  className="w-20 h-3 bg-slate-200 rounded-lg appearance-none cursor-pointer slider"
+                  style={{
+                    background: `linear-gradient(to right, var(--inde-color) 0%, var(--inde-color) ${speed}%, #e2e8f0 ${speed}%, #e2e8f0 100%)`
+                  }}
+                  disabled={isRunning}
+                />
+                <span className="text-slate-900 font-bold text-lg min-w-[3rem] text-center bg-white px-3 py-1 rounded-lg border-2 border-slate-300">
+                  {speed}
+                </span>
+              </div>
             </div>
           </div>
 

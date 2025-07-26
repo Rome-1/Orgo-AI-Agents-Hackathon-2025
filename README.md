@@ -22,9 +22,8 @@ I want to go above and beyond browser use—we want to use the whole computer. I
 
 - **Frontend**: Next.js with Tailwind CSS
 - **AI Integration**: Orgo AI for desktop automation
-- **Providers**: Anthropic (Claude) and Groq support
+- **Providers**: Anthropic (Claude) and Groq support (groq work-in-progress)
 - **Real-time**: Server-Sent Events for live streaming
-- **UI**: Neo-brutalist design with consistent aesthetics
 
 ## Getting Started
 
