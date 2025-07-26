@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { getComputer } from '@/lib/orgo';
 
-export const runtime = 'nodej'; // keep stateful Map
+export const runtime = 'nodejs'; // keep stateful Map
 
 // 🗄️   in‑memory conversation cache (OK for PoC / dev)
 type Conv = { instruction: string; running: boolean };
