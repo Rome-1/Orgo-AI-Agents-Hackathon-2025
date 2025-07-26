@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --inde-color: blue;
+  --inde-color: #92b6f0;
 }
 
 html {
