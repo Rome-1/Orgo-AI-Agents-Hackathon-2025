@@ -1,17 +1,35 @@
 import { NextResponse } from "next/server"
+import { getComputer } from '@/lib/orgo'
+
+export const runtime = 'nodejs'
 
 export async function GET() {
   try {
-    // Simulate launching Inde and getting a screenshot
-    await new Promise((resolve) => setTimeout(resolve, 1500)) // Simulate loading time
+    if (!process.env.ORGO_API_KEY) {
+      return NextResponse.json({ error: "ORGO_API_KEY environment variable is required" }, { status: 500 })
+    }
+    
+    if (!process.env.ORGO_PROJECT_ID) {
+      return NextResponse.json({ error: "ORGO_PROJECT_ID environment variable is required" }, { status: 500 })
+    }
+
+    const computer = await getComputer()
+    const screenshot = await computer.screenshotBase64()
 
     return NextResponse.json({
       success: true,
       message: "Inde launched successfully",
-      screenshot: "/placeholder.svg?height=300&width=500",
+      screenshot: `data:image/jpeg;base64,${screenshot}`,
     })
+    
   } catch (error) {
-    console.error("Error launching Inde:", error)
-    return NextResponse.json({ error: "Failed to launch Inde" }, { status: 500 })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorName = error instanceof Error ? error.name : 'UnknownError'
+    
+    return NextResponse.json({ 
+      error: "Failed to launch Inde",
+      details: errorMessage,
+      type: errorName
+    }, { status: 500 })
   }
 }

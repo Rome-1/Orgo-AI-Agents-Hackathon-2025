@@ -1,16 +1,28 @@
-import { NextResponse } from "next/server"
+import { NextRequest } from 'next/server';
+import { resetComputer } from '@/lib/orgo';
 
-export async function GET() {
+export const runtime = 'nodejs';
+
+export async function POST(req: NextRequest) {
   try {
-    // Simulate reset action
-    console.log("Resetting demo")
+    await resetComputer();
 
-    return NextResponse.json({
-      success: true,
-      message: "Demo reset successfully",
-    })
+    // TODO: return screenshot of new computer state
+    
+    return new Response(JSON.stringify({ 
+      success: true, 
+      message: 'Computer restarted successfully' 
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   } catch (error) {
-    console.error("Error resetting demo:", error)
-    return NextResponse.json({ error: "Failed to reset demo" }, { status: 500 })
+    console.error('Reset error:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Failed to restart computer' 
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
-}
+} 

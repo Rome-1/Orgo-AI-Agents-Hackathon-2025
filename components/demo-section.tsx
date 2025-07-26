@@ -1,19 +1,36 @@
 "use client"
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { motion } from "framer-motion"
+// import { Safari } from "@/components/magicui/safari" // TODO: add this back in
 
 export function DemoSection() {
   const [isLoading, setIsLoading] = useState(false)
   const [hasImage, setHasImage] = useState(false)
   const [speed, setSpeed] = useState(50)
   const [inputText, setInputText] = useState("")
+  const [convId, setConvId] = useState<string>()
+  const [events, setEvents] = useState<any[]>([])
+  const [isRunning, setIsRunning] = useState(false)
+  const [screenshot, setScreenshot] = useState<string>('')
+  const eventSourceRef = useRef<EventSource | null>(null)
 
   const handleLaunchInde = async () => {
     setIsLoading(true)
     try {
       const response = await fetch("/api/demo/launch")
       if (response.ok) {
-        setHasImage(true)
+              const data = await response.json()
+      
+      if (data.error) {
+        console.error("❌ Launch error:", data.error, data.details, data.type)
+        throw new Error(data.error + (data.details ? `: ${data.details}` : ''))
+      }
+      
+      setHasImage(true)
+      // Update the screenshot state
+      if (data.screenshot) {
+        setScreenshot(data.screenshot)
+      }
       }
     } catch (error) {
       console.error("Error launching Inde:", error)
@@ -22,29 +39,112 @@ export function DemoSection() {
     }
   }
 
-  const handlePlay = async () => {
+  const startStreaming = async (endpoint: string, body: any) => {
+    setIsRunning(true)
+    setEvents([])
+    eventSourceRef.current?.close()
+
     try {
-      await fetch(`/api/demo/play?speed=${speed}`)
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to start execution')
+      }
+
+      const newConvId = response.headers.get('x-conversation-id')
+      if (newConvId) {
+        setConvId(newConvId)
+      }
+
+      // Create EventSource for streaming
+      const reader = response.body?.getReader()
+      if (!reader) {
+        throw new Error('No response body')
+      }
+
+      const decoder = new TextDecoder()
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+
+        let currentEventType = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEventType = line.slice(7)
+            continue
+          }
+          if (line.startsWith('data:')) {
+            try {
+              const data = JSON.parse(line.slice(5))
+              setEvents(prev => [...prev, { type: currentEventType, ...data }])
+              
+              // Update screenshot if available
+              if (data.screenshot) {
+                setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
+              }
+            } catch (e) {
+              console.error('Failed to parse event data:', e)
+            }
+          }
+        }
+      }
     } catch (error) {
-      console.error("Error playing demo:", error)
+      console.error('Streaming error:', error)
+      setEvents(prev => [...prev, { type: 'error', error: String(error) }])
+    } finally {
+      setIsRunning(false)
     }
   }
 
+  const handlePlay = async () => {
+    if (!inputText.trim()) return
+    
+    // Convert speed to delay (inverse relationship)
+    const delayMs = Math.max(100, 2000 - (speed * 20))
+    
+    await startStreaming('/api/demo/play', {
+      instruction: inputText.trim(),
+      convId,
+      delayMs
+    })
+  }
+
   const handleForward = async () => {
-    try {
-      await fetch(`/api/demo/forward?speed=${speed}`)
-    } catch (error) {
-      console.error("Error forwarding demo:", error)
-    }
+    if (!inputText.trim() && !convId) return
+    
+    await startStreaming('/api/demo/forward', {
+      instruction: inputText.trim(),
+      convId
+    })
   }
 
   const handleReset = async () => {
     try {
-      await fetch("/api/demo/reset")
-      setHasImage(false)
+      const response = await fetch("/api/demo/reset", { method: 'POST' })
+      if (response.ok) {
+        setHasImage(false)
+        setEvents([])
+        setConvId(undefined)
+        setIsRunning(false)
+        setScreenshot('')
+        eventSourceRef.current?.close()
+      }
     } catch (error) {
       console.error("Error resetting demo:", error)
     }
+  }
+
+  const stopExecution = () => {
+    eventSourceRef.current?.close()
+    setIsRunning(false)
   }
 
   return (
@@ -71,6 +171,7 @@ export function DemoSection() {
               onChange={(e) => setInputText(e.target.value)}
               placeholder="Tell Inde what you want to accomplish..."
               className="w-full px-6 py-4 border-3 border-slate-300 rounded-xl text-lg font-medium focus:border-inde focus:outline-none transition-colors"
+              disabled={isRunning}
             />
           </div>
 
@@ -93,7 +194,7 @@ export function DemoSection() {
             ) : (
               <div className="w-full h-full bg-slate-800 rounded-lg flex items-center justify-center p-4">
                 <img
-                  src="/placeholder.svg?height=400&width=600&text=Inde+Interface"
+                  src={screenshot || "/placeholder.svg?height=400&width=600&text=Inde+Interface"}
                   alt="Inde Demo Interface"
                   className="max-w-full max-h-full rounded object-contain"
                 />
@@ -101,20 +202,44 @@ export function DemoSection() {
             )}
           </div>
 
+          {/* Event Stream */}
+          {events.length > 0 && (
+            <div className="mb-8 bg-slate-50 rounded-xl p-4 border-2 border-slate-200">
+              <h3 className="text-lg font-bold mb-3 text-slate-900">Event Stream</h3>
+              <div className="max-h-32 overflow-y-auto space-y-2">
+                {events.map((event, index) => (
+                  <div key={index} className="text-sm">
+                    <span className="font-mono text-blue-600">{event.type}:</span>
+                    <span className="ml-2">{event.text || event.message || JSON.stringify(event)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Control Panel */}
           <div className="flex items-center justify-between bg-slate-50 rounded-xl p-6 border-3 border-slate-200">
             <div className="flex items-center space-x-6">
               <button
                 onClick={handlePlay}
-                className="w-14 h-14 bg-green-500 text-white rounded-xl flex items-center justify-center hover:bg-green-600 transition-colors font-bold text-xl border-2 border-green-600"
+                disabled={isRunning || !inputText.trim()}
+                className="w-14 h-14 bg-green-500 text-white rounded-xl flex items-center justify-center hover:bg-green-600 transition-colors font-bold text-xl border-2 border-green-600 disabled:opacity-50"
               >
                 ▶
               </button>
               <button
                 onClick={handleForward}
-                className="w-14 h-14 inde-bg text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600"
+                disabled={isRunning || (!inputText.trim() && !convId)}
+                className="w-14 h-14 inde-bg text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600 disabled:opacity-50"
               >
                 {">>"}
+              </button>
+              <button
+                onClick={stopExecution}
+                disabled={!isRunning}
+                className="w-14 h-14 bg-yellow-500 text-white rounded-xl flex items-center justify-center hover:bg-yellow-600 transition-colors font-bold text-xl border-2 border-yellow-600 disabled:opacity-50"
+              >
+                ⏸
               </button>
               <button
                 onClick={handleReset}
@@ -133,6 +258,7 @@ export function DemoSection() {
                 value={speed}
                 onChange={(e) => setSpeed(Number(e.target.value))}
                 className="w-32 h-3 accent-inde"
+                disabled={isRunning}
               />
               <span className="text-slate-900 font-bold text-lg min-w-[3rem] text-center bg-white px-3 py-1 rounded-lg border-2 border-slate-300">
                 {speed}
