@@ -37,11 +37,33 @@ export async function POST(request: NextRequest) {
       try {
         const computer = await getComputer()
 
+        // Helper function to take and send screenshot
+        const sendScreenshot = async () => {
+          try {
+            const screenshot = await computer.screenshotBase64()
+            controller.enqueue(
+              `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
+            )
+          } catch (error) {
+            console.error("Failed to take screenshot:", error)
+          }
+        }
+
+        // Send initial screenshot
+        await sendScreenshot()
+
         // Create progress callback for streaming events
         const progressCallback = (eventType: string, eventData: any) => {
           controller.enqueue(
             `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
           )
+          
+          // Take screenshot after tool_use events
+          if (eventType === 'tool_use') {
+            setTimeout(async () => {
+              await sendScreenshot()
+            }, 500) // Fixed delay for step-by-step
+          }
         }
 
         // Execute the instruction with Orgo (single step)

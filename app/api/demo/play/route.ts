@@ -8,7 +8,7 @@ type Conv = { instruction: string; running: boolean };
 const conversations = new Map<string, Conv>();
 
 export async function POST(request: NextRequest) {
-  const { instruction, convId, delayMs = 500 } = await request.json()
+  const { instruction, convId, delayMs = 1 } = await request.json()
   
   if (!instruction) {
     return NextResponse.json({ error: "Instruction is required" }, { status: 400 })
@@ -34,18 +34,40 @@ export async function POST(request: NextRequest) {
       try {
         const computer = await getComputer()
 
+        // Helper function to take and send screenshot
+        const sendScreenshot = async () => {
+          try {
+            const screenshot = await computer.screenshotBase64()
+            controller.enqueue(
+              `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
+            )
+          } catch (error) {
+            console.error("Failed to take screenshot:", error)
+          }
+        }
+
+        // Send initial screenshot
+        await sendScreenshot()
+
         // Create progress callback for streaming events
         const progressCallback = (eventType: string, eventData: any) => {
           controller.enqueue(
             `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
           )
+          
+          // Take screenshot after tool_use events
+          if (eventType === 'tool_use') {
+            setTimeout(async () => {
+              await sendScreenshot()
+            }, delayMs)
+          }
         }
 
         // Execute the instruction with Orgo
         await computer.prompt({ 
           instruction: conv!.instruction,
           callback: progressCallback,
-          maxIterations: 15,
+          maxIterations: 5,
           maxTokens: 4096
         })
 

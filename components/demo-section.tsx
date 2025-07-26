@@ -90,6 +90,11 @@ export function DemoSection() {
               if (data.screenshot) {
                 setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
               }
+              
+              // Handle screenshot events specifically
+              if (currentEventType === 'screenshot' && data.screenshot) {
+                setScreenshot(`data:image/jpeg;base64,${data.screenshot}`)
+              }
             } catch (e) {
               console.error('Failed to parse event data:', e)
             }
