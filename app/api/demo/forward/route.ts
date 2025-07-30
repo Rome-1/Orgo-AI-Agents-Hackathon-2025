@@ -11,12 +11,12 @@ type Conv = {
   totalSteps: number;
   conversationHistory: any[];
   lastResponse: any;
-  provider: 'anthropic' | 'groq';
+  provider: 'anthropic' | 'groq' | 'cerebras';
 };
 const conversations = new Map<string, Conv>();
 
 export async function POST(request: NextRequest) {
-  const { instruction, convId, conversationHistory = [], provider = 'anthropic' } = await request.json()
+  const { instruction, convId, conversationHistory = [], provider = 'anthropic', disableDelays = false } = await request.json()
   
   if (!instruction && !convId) {
     return NextResponse.json({ error: "Instruction or conversation ID is required" }, { status: 400 })
@@ -58,17 +58,28 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       try {
         const computer = await getComputer()
-
+        
+        // Metrics tracking
+        const startTime = Date.now()
+        let actionCount = 0
+        const actionTypeMetrics: { [key: string]: { count: number, totalTime: number } } = {}
+        const modelCallMetrics: { count: number, totalTime: number } = { count: 0, totalTime: 0 }
+        
         // Helper function to take and send screenshot
         const sendScreenshot = async () => {
           try {
+            console.log("Taking screenshot...")
             const screenshot = await computer.screenshotBase64()
+            console.log("Screenshot taken, length:", screenshot?.length || 0)
             try {
+              const eventData = { screenshot }
+              console.log("Sending screenshot event with data length:", JSON.stringify(eventData).length)
               controller.enqueue(
-                `event: screenshot\ndata:${JSON.stringify({ screenshot })}\n\n`
+                `event: screenshot\ndata:${JSON.stringify(eventData)}\n\n`
               )
+              console.log("Screenshot event sent successfully")
             } catch (error) {
-              console.log("Controller closed, cannot send screenshot")
+              console.log("Controller closed, cannot send screenshot:", error)
             }
           } catch (error) {
             console.error("Failed to take screenshot:", error)
@@ -77,9 +88,24 @@ export async function POST(request: NextRequest) {
 
         // Send initial screenshot
         await sendScreenshot()
+        actionCount++ // Count initial screenshot
 
         // Create progress callback for streaming events
         const progressCallback = async (eventType: string, eventData: any) => {
+          // Track action count for all meaningful events
+          if (eventType === 'tool_use' || eventType === 'screenshot' || eventType === 'text' || eventType === 'thinking') {
+            actionCount++
+          }
+          
+          // Track action type metrics
+          if (eventType === 'tool_use' && eventData.input?.action) {
+            const actionType = eventData.input.action
+            if (!actionTypeMetrics[actionType]) {
+              actionTypeMetrics[actionType] = { count: 0, totalTime: 0 }
+            }
+            actionTypeMetrics[actionType].count++
+          }
+          
           try {
             controller.enqueue(
               `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
@@ -132,13 +158,17 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
         console.log(`Executing step ${conv!.currentStep} for conversation ${id} with provider: ${conv!.provider}`)
         
         if (conv!.provider === 'anthropic') {
+          const modelCallStart = Date.now()
           await computer.prompt({ 
             instruction: fullInstruction,
             callback: progressCallback,
             maxIterations: 3, // Take 3 steps per forward click
             maxTokens: 4096
           })
-        } else {
+          const modelCallEnd = Date.now()
+          modelCallMetrics.count++
+          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
+        } else if (conv!.provider === 'groq') {
           // Use Groq with structured output (JSON schema) instead of tool calls
           const Groq = require('groq-sdk')
           const client = new Groq()
@@ -147,21 +177,24 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           const messages: any[] = [
             {
               role: "system",
-              content: "You are a computer automation assistant. You control a remote desktop and can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an array of actions to execute. Each action should have the appropriate parameters (coordinates for clicks, text for typing, etc.). Always pass numeric values (not strings) for duration and scroll_amount."
+              content: "You are a computer automation assistant. You control a remote desktop (1024x768 pixels) and can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an 'actions' array and optional 'reasoning' string. Each action should have an 'action' field (screenshot, left_click, right_click, double_click, type, key, scroll, wait) and appropriate parameters (coordinate array for clicks, text for typing, key for key presses, etc.). Always pass numeric values (not strings) for duration and scroll_amount. IMPORTANT: When using the 'key' action, use the 'key' field (not 'text') and press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab' - these are not supported. Coordinate clicks within the 1024x768 display area."
             },
             { role: "user", content: fullInstruction }
           ]
           
+          const modelCallStart = Date.now()
           const response = await client.chat.completions.create({
             model: "llama-3.3-70b-versatile",
             messages,
             response_format: {
-              type: "json_schema",
-              json_schema: computerActionSchema.schema
+              type: "json_object"
             },
             max_tokens: 4096,
             stream: false
           })
+          const modelCallEnd = Date.now()
+          modelCallMetrics.count++
+          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
           
           const assistantMsg = response.choices[0].message
           
@@ -169,15 +202,20 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           let actionData
           try {
             actionData = JSON.parse(assistantMsg.content || "{}")
+            console.log("Parsed Groq response:", JSON.stringify(actionData, null, 2))
           } catch (parseError) {
             console.error("Failed to parse Groq response:", assistantMsg.content)
+            console.error("Parse error:", parseError)
             return
           }
           
           // Process actions if any
           if (actionData.actions && actionData.actions.length > 0) {
+            console.log(`Executing ${actionData.actions.length} actions from Groq`)
             for (const action of actionData.actions) {
               try {
+                console.log("Executing action:", JSON.stringify(action, null, 2))
+                
                 // Send tool_use event
                 await progressCallback('tool_use', { type: "tool_use", input: action })
                 
@@ -201,23 +239,124 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
               }
             }
           }
+        } else if (conv!.provider === 'cerebras') {
+          // Use Cerebras with tool calling support
+          const Cerebras = require('@cerebras/cerebras_cloud_sdk')
+          const client = new Cerebras({
+            apiKey: process.env.CEREBRAS_API_KEY
+          })
+          const { cerebrasComputerTool, execTool } = await import('@/lib/tools')
+          
+          const messages: any[] = [
+            {
+              role: "system",
+              content: "You are a computer automation assistant. You control a remote desktop (1024x768 pixels) through the computer_action function. Always pass numeric values (not strings) for duration and scroll_amount. Use the computer_action function to perform tasks on the desktop. IMPORTANT: When using the 'key' action, press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab' - these are not supported. Coordinate clicks within the 1024x768 display area."
+            },
+            { role: "user", content: fullInstruction }
+          ]
+          
+          const modelCallStart = Date.now()
+          const response = await client.chat.completions.create({
+            model: "llama-4-maverick-17b-128e-instruct", //"qwen-3-235b-a22b-instruct-2507",
+            messages,
+            tools: [cerebrasComputerTool],
+            parallel_tool_calls: false,
+            max_tokens: 4096,
+            stream: false
+          })
+          const modelCallEnd = Date.now()
+          modelCallMetrics.count++
+          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
+          
+          const assistantMsg = response.choices[0].message
+          
+          // Process tool calls if any
+          if (assistantMsg.tool_calls?.length) {
+            for (const call of assistantMsg.tool_calls) {
+              try {
+                // Parse the function arguments
+                let args
+                try {
+                  args = JSON.parse(call.function.arguments)
+                } catch (parseError) {
+                  console.error("Failed to parse tool call arguments:", call.function.arguments)
+                  continue
+                }
+                
+                // Send tool_use event
+                await progressCallback('tool_use', { type: "tool_use", input: args })
+                
+                // Execute the tool
+                const result = await execTool(computer, args)
+                
+                // Send tool_result event
+                await progressCallback('tool_result', result)
+                
+                // Add to conversation history
+                conv!.conversationHistory.push({
+                  step: conv!.currentStep,
+                  type: "tool_use",
+                  data: { action: args.action, result },
+                  timestamp: new Date().toISOString()
+                })
+                
+                // Add tool result to messages for next iteration
+                messages.push({
+                  role: "tool",
+                  name: call.function.name,
+                  content: JSON.stringify(result),
+                  tool_call_id: call.id
+                })
+                
+              } catch (error) {
+                console.error("Error processing tool call:", error)
+                // Continue with next tool call instead of breaking
+              }
+            }
+          }
         }
 
         // Take final screenshot before completion
         await sendScreenshot()
+        actionCount++ // Count final screenshot
 
-        // Send completion event with step information and updated history
+        // Calculate metrics
+        const endTime = Date.now()
+        const totalTime = endTime - startTime
+        const actionsPerSecond = actionCount > 0 ? (actionCount / (totalTime / 1000)).toFixed(2) : '0.00'
+        
+        // Calculate detailed metrics
+        const avgModelCallTime = modelCallMetrics.count > 0 ? (modelCallMetrics.totalTime / modelCallMetrics.count).toFixed(2) : '0.00'
+        const actionTypeBreakdown = Object.entries(actionTypeMetrics).map(([type, metrics]) => ({
+          type,
+          count: metrics.count,
+          avgTime: metrics.count > 0 ? (metrics.totalTime / metrics.count).toFixed(2) : '0.00'
+        }))
+
+        // Send completion event with step information, updated history, and metrics
         controller.enqueue(
           `event: step_complete\ndata:${JSON.stringify({ 
             message: "Step completed",
             currentStep: conv!.currentStep,
             totalHistory: conv!.conversationHistory.length,
             hasMoreWork: conv!.conversationHistory.length < 10, // Arbitrary limit to prevent infinite loops
-            conversationHistory: conv!.conversationHistory // Send back the updated history
+            conversationHistory: conv!.conversationHistory, // Send back the updated history
+            metrics: {
+              totalTime: totalTime,
+              actionCount: actionCount,
+              actionsPerSecond: actionsPerSecond,
+              provider: conv!.provider,
+              modelCallMetrics: {
+                count: modelCallMetrics.count,
+                totalTime: modelCallMetrics.totalTime,
+                avgTime: avgModelCallTime
+              },
+              actionTypeBreakdown: actionTypeBreakdown
+            }
           })}\n\n`
         )
 
-      } catch (error) {
+  } catch (error) {
         console.error("Forward error:", error)
         controller.enqueue(
           `event: error\ndata:${JSON.stringify({ error: String(error) })}\n\n`

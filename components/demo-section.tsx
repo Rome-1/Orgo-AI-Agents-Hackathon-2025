@@ -12,16 +12,41 @@ export function DemoSection() {
   const [events, setEvents] = useState<any[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [screenshot, setScreenshot] = useState<string>('')
-  const [provider, setProvider] = useState<'anthropic' | 'groq'>('anthropic')
+  const [provider, setProvider] = useState<'anthropic' | 'groq' | 'cerebras'>('anthropic')
   const [model, setModel] = useState<string>('claude-sonnet-4-20250514')
   const [waitingForStep, setWaitingForStep] = useState(false)
   const [conversationHistory, setConversationHistory] = useState<any[]>([])
+  const [metrics, setMetrics] = useState<{
+    totalTime?: number
+    actionCount?: number
+    actionsPerSecond?: string
+    provider?: string
+    modelCallMetrics?: {
+      count: number
+      totalTime: number
+      avgTime: string
+    }
+    actionTypeBreakdown?: Array<{
+      type: string
+      count: number
+      avgTime: string
+    }>
+  } | null>(null)
+  const [disableDelays, setDisableDelays] = useState(false)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const sliderRef = useRef<HTMLInputElement>(null)
 
   // Debug screenshot state changes
   useEffect(() => {
     console.log("Screenshot state changed:", screenshot ? `Length: ${screenshot.length}` : "empty")
   }, [screenshot])
+
+  // Update slider styling when speed changes
+  useEffect(() => {
+    if (sliderRef.current) {
+      sliderRef.current.style.background = `linear-gradient(to right, var(--inde-color) 0%, var(--inde-color) ${speed}%, #e2e8f0 ${speed}%, #e2e8f0 100%)`
+    }
+  }, [speed])
 
   // Function to get current screenshot
   const getCurrentScreenshot = async () => {
@@ -74,7 +99,7 @@ export function DemoSection() {
       if (isRunning) {
         await getCurrentScreenshot()
       }
-    }, 500) // Update every 2 seconds
+    }, 2000) // Update every 2 seconds
 
     try {
       const response = await fetch(endpoint, {
@@ -113,6 +138,9 @@ export function DemoSection() {
           if (line.startsWith('event: ')) {
             currentEventType = line.slice(7)
             console.log("Received event type:", currentEventType)
+            if (currentEventType === 'screenshot') {
+              console.log("Screenshot event detected!")
+            }
             continue
           }
           if (line.startsWith('data:')) {
@@ -135,6 +163,7 @@ export function DemoSection() {
                 const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
                 console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
                 setScreenshot(newScreenshot)
+                setHasImage(true) // Ensure the image is marked as available
               }
               
               // Handle agent-specific events
@@ -149,6 +178,17 @@ export function DemoSection() {
                 if (data.conversationHistory) {
                   console.log("Received updated conversation history:", data.conversationHistory.length, "entries")
                   setConversationHistory(data.conversationHistory)
+                }
+                // Update metrics if available
+                if (data.metrics) {
+                  console.log("Received metrics:", data.metrics)
+                  setMetrics(data.metrics)
+                }
+              } else if (currentEventType === 'complete') {
+                // Update metrics from completion event
+                if (data.metrics) {
+                  console.log("Received completion metrics:", data.metrics)
+                  setMetrics(data.metrics)
                 }
               }
             } catch (e) {
@@ -180,7 +220,8 @@ export function DemoSection() {
       instruction: inputText.trim(),
       convId,
       delayMs,
-      provider
+      provider,
+      disableDelays
     })
   }
 
@@ -194,7 +235,8 @@ export function DemoSection() {
       instruction: inputText.trim(),
       convId,
       conversationHistory,
-      provider
+      provider,
+      disableDelays
     })
   }
 
@@ -229,6 +271,7 @@ export function DemoSection() {
         setIsRunning(false)
         setScreenshot('')
         setConversationHistory([])
+        setMetrics(null)
         eventSourceRef.current?.close()
       }
     } catch (error) {
@@ -299,79 +342,189 @@ export function DemoSection() {
 
 
           {/* Control Panel */}
-          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
-            <div className="flex items-center space-x-6">
-              <button
-                onClick={handlePlay}
-                disabled={isRunning || !inputText.trim()}
-                className="w-14 h-14 bg-green-500 text-white rounded-xl flex items-center justify-center hover:bg-green-600 transition-colors font-bold text-xl border-2 border-green-600 disabled:opacity-50"
-              >
-                ▶
-              </button>
-              <button
-                onClick={handleForward}
-                disabled={isRunning || (!inputText.trim() && !convId)}
-                className="w-14 h-14 bg-blue-500 text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600 disabled:opacity-50"
-              >
-                {">>"}
-              </button>
-              <button
-                onClick={stopExecution}
-                disabled={!isRunning}
-                className="w-14 h-14 bg-yellow-500 text-white rounded-xl flex items-center justify-center hover:bg-yellow-600 transition-colors font-bold text-xl border-2 border-yellow-600 disabled:opacity-50"
-              >
-                ⏸
-              </button>
-              <button
-                onClick={handleReset}
-                className="w-14 h-14 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-colors font-bold text-xl border-2 border-red-600"
-              >
-                ↻
-              </button>
-              <button
-                onClick={getCurrentScreenshot}
-                disabled={!hasImage}
-                className="w-14 h-14 bg-purple-500 text-white rounded-xl flex items-center justify-center hover:bg-purple-600 transition-colors font-bold text-lg border-2 border-purple-600 disabled:opacity-50"
-                title="Refresh Screenshot"
-              >
-                📷
-              </button>
-            </div>
+          <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
+            <div className="flex flex-col space-y-4">
+              {/* Controls Row */}
+              <div className="flex items-center space-x-4">
+                {/* Model Selector */}
+                <div className="flex items-center space-x-3">
+                  <label className="text-slate-700 font-bold text-sm">AI Model:</label>
+                  <select
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value as 'anthropic' | 'groq' | 'cerebras')}
+                    className="px-4 py-2 bg-white text-slate-900 rounded-xl font-bold text-sm border-2 border-slate-300 hover:border-inde focus:border-inde focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                    disabled={isRunning}
+                  >
+                    <option value="anthropic">🤖 Claude</option>
+                    <option value="groq">⚡ Groq</option>
+                    <option value="cerebras">🚀 Cerebras</option>
+                  </select>
+                </div>
 
-            <div className="flex items-center space-x-6">
-              <div className="flex items-center space-x-2">
-                {/* <label className="text-slate-700 font-bold text-sm">Forward Agent:</label> */}
-                <select
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value as 'anthropic' | 'groq')}
-                  className="px-3 py-1 border border-slate-300 rounded text-sm font-medium"
-                  disabled={isRunning}
-                >
-                  <option value="anthropic">Claude</option>
-                  <option value="groq">Groq</option>
-                </select>
+                {/* Speed Control */}
+                <div className="flex items-center space-x-3">
+                  <label className="text-slate-700 font-bold text-sm">Speed:</label>
+                  <div className="flex items-center space-x-2 bg-white rounded-xl border-2 border-slate-300 px-3 py-2 shadow-sm">
+                    <input
+                      ref={sliderRef}
+                      type="range"
+                      min="1"
+                      max="100"
+                      value={speed}
+                      onChange={(e) => setSpeed(Number(e.target.value))}
+                      className="w-24 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer slider focus:outline-none"
+                      disabled={isRunning}
+                    />
+                    <span className="text-slate-900 font-bold text-lg min-w-[2.5rem] text-center">
+                      {speed}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Delay Toggle */}
+                <div className="flex items-center space-x-3">
+                  <label className="text-slate-700 font-bold text-sm">Delays:</label>
+                  <button
+                    onClick={() => setDisableDelays(!disableDelays)}
+                    disabled={isRunning}
+                    className={`px-4 py-2 rounded-xl font-bold text-sm border-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${
+                      !disableDelays 
+                        ? 'bg-green-500 text-white border-green-600 hover:bg-green-600' 
+                        : 'bg-red-500 text-white border-red-600 hover:bg-red-600'
+                    }`}
+                  >
+                    {!disableDelays ? '✅ Enabled' : '❌ Disabled'}
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center space-x-2">
-                <label className="text-slate-700 font-bold text-lg">Speed</label>
-                <input
-                  type="range"
-                  min="1"
-                  max="100"
-                  value={speed}
-                  onChange={(e) => setSpeed(Number(e.target.value))}
-                  className="w-20 h-3 bg-slate-200 rounded-lg appearance-none cursor-pointer slider"
-                  style={{
-                    background: `linear-gradient(to right, var(--inde-color) 0%, var(--inde-color) ${speed}%, #e2e8f0 ${speed}%, #e2e8f0 100%)`
-                  }}
-                  disabled={isRunning}
-                />
-                <span className="text-slate-900 font-bold text-lg min-w-[3rem] text-center bg-white px-3 py-1 rounded-lg border-2 border-slate-300">
-                  {speed}
-                </span>
+
+              {/* Action Buttons Row */}
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={handlePlay}
+                  disabled={isRunning || !inputText.trim()}
+                  className="w-14 h-14 bg-green-500 text-white rounded-xl flex items-center justify-center hover:bg-green-600 transition-colors font-bold text-xl border-2 border-green-600 disabled:opacity-50"
+                >
+                  ▶
+                </button>
+                <button
+                  onClick={handleForward}
+                  disabled={isRunning || (!inputText.trim() && !convId)}
+                  className="w-14 h-14 bg-blue-500 text-white rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity font-bold text-lg border-2 border-blue-600 disabled:opacity-50"
+                >
+                  {">>"}
+                </button>
+                <button
+                  onClick={stopExecution}
+                  disabled={!isRunning}
+                  className="w-14 h-14 bg-yellow-500 text-white rounded-xl flex items-center justify-center hover:bg-yellow-600 transition-colors font-bold text-xl border-2 border-yellow-600 disabled:opacity-50"
+                >
+                  ⏸
+                </button>
+                <button
+                  onClick={handleReset}
+                  className="w-14 h-14 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-colors font-bold text-xl border-2 border-red-600"
+                >
+                  ↻
+                </button>
+                <button
+                  onClick={getCurrentScreenshot}
+                  disabled={!hasImage}
+                  className="w-14 h-14 bg-purple-500 text-white rounded-xl flex items-center justify-center hover:bg-purple-600 transition-colors font-bold text-lg border-2 border-purple-600 disabled:opacity-50"
+                  title="Refresh Screenshot"
+                >
+                  📷
+                </button>
               </div>
             </div>
           </div>
 
+
+          {/* Metrics Display */}
+          {metrics && (
+            <div className="mb-8 mt-8 bg-inde/10 rounded-xl p-6 border-2 border-inde/20">
+              <h3 className="text-lg font-bold mb-4 text-slate-900">Performance Metrics</h3>
+              
+              {/* Basic Metrics */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-inde">{metrics.provider}</div>
+                  <div className="text-sm text-slate-600">Provider</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-inde">{metrics.totalTime}ms</div>
+                  <div className="text-sm text-slate-600">Total Time</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-inde">{metrics.actionCount}</div>
+                  <div className="text-sm text-slate-600">Actions</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-inde">{metrics.actionsPerSecond}/s</div>
+                  <div className="text-sm text-slate-600">Actions/Second</div>
+                </div>
+              </div>
+
+              {/* Model Call Metrics */}
+              {metrics.modelCallMetrics && (
+                <div className="mb-6 p-4 bg-white rounded-lg border border-slate-200">
+                  <h4 className="text-md font-bold mb-3 text-slate-800">Model Call Performance</h4>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="text-center">
+                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.count}</div>
+                      <div className="text-sm text-slate-600">Calls</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.totalTime}ms</div>
+                      <div className="text-sm text-slate-600">Total Time</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.avgTime}ms</div>
+                      <div className="text-sm text-slate-600">Avg/Call</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Type Breakdown */}
+              {metrics.actionTypeBreakdown && metrics.actionTypeBreakdown.length > 0 && (
+                <div className="p-4 bg-white rounded-lg border border-slate-200">
+                  <h4 className="text-md font-bold mb-3 text-slate-800">Action Type Breakdown</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {metrics.actionTypeBreakdown.map((action, index) => (
+                      <div key={index} className="text-center p-2 bg-slate-50 rounded">
+                        <div className="text-lg font-bold text-inde">{action.type}</div>
+                        <div className="text-sm text-slate-600">{action.count} actions</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Speed Report */}
+          <div className="mb-8 mt-8 bg-gradient-to-r from-inde/20 to-blue-500/20 rounded-xl p-6 border-2 border-inde/30">
+            <h3 className="text-lg font-bold mb-4 text-slate-900">Speed Report</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-inde">{speed}</div>
+                <div className="text-sm text-slate-600">Speed Setting</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-inde">{Math.max(100, 2000 - (speed * 20))}ms</div>
+                <div className="text-sm text-slate-600">Delay Between Actions</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-inde">{disableDelays ? 'Disabled' : 'Enabled'}</div>
+                <div className="text-sm text-slate-600">Delays Status</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-inde">{provider}</div>
+                <div className="text-sm text-slate-600">AI Provider</div>
+              </div>
+            </div>
+          </div>
 
           {/* Event Stream */}
           {events.length > 0 && (
