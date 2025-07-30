@@ -22,7 +22,7 @@ I want to go above and beyond browser use—we want to use the whole computer. I
 
 - **Frontend**: Next.js with Tailwind CSS
 - **AI Integration**: Orgo AI for desktop automation
-- **Providers**: Anthropic (Claude) and Groq support (groq work-in-progress)
+- **Providers**: Anthropic (Claude), Groq (WIP), and Cerebras support
 - **Real-time**: Server-Sent Events for live streaming
 
 ## Getting Started
@@ -39,6 +39,7 @@ ORGO_API_KEY=your_orgo_api_key
 ORGO_PROJECT_ID=your_project_id
 ANTHROPIC_API_KEY=your_anthropic_key
 GROQ_API_KEY=your_groq_key
+CEREBRAS_API_KEY=your_cerebras_key
 ```
 
 ## Features
@@ -48,7 +49,7 @@ GROQ_API_KEY=your_groq_key
 - **Play**: Continuous AI execution with custom speed control
 - **Forward**: Step-by-step execution with conversation history
 - **Reset**: Clear state and restart
-- **Provider Selection**: Choose between Claude and Groq
+- **Provider Selection**: Choose between Claude, Groq, and Cerebras
 
 ### Real-time Streaming
 - Live screenshot updates during execution

@@ -158,7 +158,7 @@ export function Slide4() {
 
 export function Slide5() {
   return (
-    <SlideSection className="bg-green-500 text-slate-900">
+    <SlideSection className="bg-green-700 text-slate-900">
       <div className="space-y-12">
         {/* Main Definition */}
         <h2 className="text-4xl md:text-6xl font-black leading-tight">
