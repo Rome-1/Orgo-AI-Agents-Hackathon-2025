@@ -57,13 +57,43 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
+        // Start timing the Orgo instantiation
+        const orgoStartTime = Date.now()
         const computer = await getComputer()
+        const orgoEndTime = Date.now()
         
         // Metrics tracking
         const startTime = Date.now()
         let actionCount = 0
         const actionTypeMetrics: { [key: string]: { count: number, totalTime: number } } = {}
         const modelCallMetrics: { count: number, totalTime: number } = { count: 0, totalTime: 0 }
+        
+        // Waterfall timing tracking
+        const waterfall = {
+          apiServerHit: startTime,
+          orgoInstantiation: orgoEndTime,
+          modelCallStart: 0,
+          modelCallEnd: 0,
+          toolCallStart: 0,
+          toolCallEnd: 0,
+          actionExecution: 0
+        }
+            
+            const toolCalls: Array<{
+              type: string
+              startTime: number
+              endTime: number
+              duration: number
+              success: boolean
+              error?: string
+            }> = []
+            
+            const modelCalls: Array<{
+              startTime: number
+              endTime: number
+              duration: number
+              tokensUsed?: number
+            }> = []
         
         // Helper function to take and send screenshot
         const sendScreenshot = async () => {
@@ -92,46 +122,87 @@ export async function POST(request: NextRequest) {
 
         // Create progress callback for streaming events
         const progressCallback = async (eventType: string, eventData: any) => {
-          // Track action count for all meaningful events
-          if (eventType === 'tool_use' || eventType === 'screenshot' || eventType === 'text' || eventType === 'thinking') {
+          if (eventType === 'tool_use') {
+            // Start tool-specific timer
+            const toolStartTime = Date.now()
+            
+            // Count this as an action
             actionCount++
-          }
-          
-          // Track action type metrics
-          if (eventType === 'tool_use' && eventData.input?.action) {
-            const actionType = eventData.input.action
-            if (!actionTypeMetrics[actionType]) {
-              actionTypeMetrics[actionType] = { count: 0, totalTime: 0 }
+            
+            // Track action type metrics
+            const actionType = eventData.input?.action
+            if (actionType) {
+              if (!actionTypeMetrics[actionType]) {
+                actionTypeMetrics[actionType] = { count: 0, totalTime: 0 }
+              }
+              actionTypeMetrics[actionType].count++
             }
-            actionTypeMetrics[actionType].count++
-          }
-          
-          try {
-            controller.enqueue(
-              `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
-            )
-          } catch (error) {
-            console.log("Controller already closed, skipping event:", eventType)
-            return
-          }
-          
-          // Track conversation history
-          if (eventType === 'tool_use' || eventType === 'text') {
+            
+            // Add tool call to detailed tracking
+            toolCalls.push({
+              type: actionType || 'unknown',
+              startTime: toolStartTime,
+              endTime: 0, // Will be updated when tool completes
+              duration: 0,
+              success: false // Will be updated when tool completes
+            })
+            
+            try {
+              controller.enqueue(
+                `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
+              )
+            } catch (error) {
+              console.log("Controller already closed, skipping event:", eventType)
+              return
+            }
+            
+            // Track conversation history
             conv!.conversationHistory.push({
               step: conv!.currentStep,
               type: eventType,
               data: eventData,
               timestamp: new Date().toISOString()
             })
-          }
-          
-          // Take screenshot after tool_use events
-          if (eventType === 'tool_use') {
+            
+            // Take screenshot after tool_use events
             await new Promise(resolve => setTimeout(resolve, 500)) // Fixed delay for step-by-step
             try {
               await sendScreenshot()
             } catch (error) {
               console.log("Failed to send screenshot after delay:", error instanceof Error ? error.message : String(error))
+            }
+          } else {
+            // Handle other event types (screenshot, text, thinking, error)
+            // Don't count these as actions - only tool_use counts
+            
+            // Handle error events - update the last tool call as failed
+            if (eventType === 'error') {
+              const lastToolCall = toolCalls[toolCalls.length - 1]
+              if (lastToolCall) {
+                lastToolCall.endTime = Date.now()
+                lastToolCall.duration = lastToolCall.endTime - lastToolCall.startTime
+                lastToolCall.success = false
+                lastToolCall.error = String(eventData.error || eventData)
+              }
+            }
+            
+            try {
+              controller.enqueue(
+                `event: ${eventType}\ndata:${JSON.stringify(eventData)}\n\n`
+              )
+            } catch (error) {
+              console.log("Controller already closed, skipping event:", eventType)
+              return
+            }
+            
+            // Track conversation history for text events
+            if (eventType === 'text') {
+              conv!.conversationHistory.push({
+                step: conv!.currentStep,
+                type: eventType,
+                data: eventData,
+                timestamp: new Date().toISOString()
+              })
             }
           }
         }
@@ -158,16 +229,16 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
         console.log(`Executing step ${conv!.currentStep} for conversation ${id} with provider: ${conv!.provider}`)
         
         if (conv!.provider === 'anthropic') {
-          const modelCallStart = Date.now()
+          waterfall.modelCallStart = Date.now()
           await computer.prompt({ 
             instruction: fullInstruction,
             callback: progressCallback,
             maxIterations: 3, // Take 3 steps per forward click
             maxTokens: 4096
           })
-          const modelCallEnd = Date.now()
+          waterfall.modelCallEnd = Date.now()
           modelCallMetrics.count++
-          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
+          modelCallMetrics.totalTime += (waterfall.modelCallEnd - waterfall.modelCallStart)
         } else if (conv!.provider === 'groq') {
           // Use Groq with structured output (JSON schema) instead of tool calls
           const Groq = require('groq-sdk')
@@ -177,12 +248,12 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           const messages: any[] = [
             {
               role: "system",
-              content: "You are a computer automation assistant. You control a remote desktop (1024x768 pixels) and can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an 'actions' array and optional 'reasoning' string. Each action should have an 'action' field (screenshot, left_click, right_click, double_click, type, key, scroll, wait) and appropriate parameters (coordinate array for clicks, text for typing, key for key presses, etc.). Always pass numeric values (not strings) for duration and scroll_amount. IMPORTANT: When using the 'key' action, use the 'key' field (not 'text') and press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab' - these are not supported. Coordinate clicks within the 1024x768 display area."
+              content: "You are a computer automation assistant controlling an Ubuntu 22.04 LTS desktop (1024x768 pixels). You can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an 'actions' array. Each action should have an 'action' field (screenshot, left_click, right_click, double_click, type, key, scroll, wait) and appropriate parameters (coordinate array for clicks, text for typing, key for key presses, etc.). Always pass numeric values (not strings) for duration and scroll_amount. IMPORTANT: For Ubuntu shortcuts, use the full shortcut as a single key (e.g., 'ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+z', 'ctrl+w') - do NOT send separate key presses for 'ctrl' and the letter. Coordinate clicks within the 1024x768 display area. Use double_click to open applications and files. CRITICAL: WAITING IS NOT AN OPTION. You must take proactive actions to complete the task. Do not just wait or take screenshots - actually DO something to accomplish the goal. Be aggressive and take multiple actions per response. If you see a terminal, type commands. If you see an application, interact with it. If you see text, type it. ALWAYS TAKE ACTION."
             },
             { role: "user", content: fullInstruction }
           ]
           
-          const modelCallStart = Date.now()
+          waterfall.modelCallStart = Date.now()
           const response = await client.chat.completions.create({
             model: "llama-3.3-70b-versatile",
             messages,
@@ -192,9 +263,9 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
             max_tokens: 4096,
             stream: false
           })
-          const modelCallEnd = Date.now()
+          waterfall.modelCallEnd = Date.now()
           modelCallMetrics.count++
-          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
+          modelCallMetrics.totalTime += (waterfall.modelCallEnd - waterfall.modelCallStart)
           
           const assistantMsg = response.choices[0].message
           
@@ -212,18 +283,32 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           // Process actions if any
           if (actionData.actions && actionData.actions.length > 0) {
             console.log(`Executing ${actionData.actions.length} actions from Groq`)
+            
+            // Set tool call timing
+            waterfall.toolCallStart = Date.now()
+            
             for (const action of actionData.actions) {
               try {
                 console.log("Executing action:", JSON.stringify(action, null, 2))
                 
                 // Send tool_use event
-                await progressCallback('tool_use', { type: "tool_use", input: action })
+                try {
+                  await progressCallback('tool_use', { type: "tool_use", input: action })
+                } catch (enqueueError) {
+                  console.error("Failed to send tool_use event:", enqueueError)
+                  // Don't throw - just continue
+                }
                 
                 // Execute the action
                 const result = await execTool(computer, action)
                 
                 // Send tool_result event
-                await progressCallback('tool_result', result)
+                try {
+                  await progressCallback('tool_result', result)
+                } catch (enqueueError) {
+                  console.error("Failed to send tool_result event:", enqueueError)
+                  // Don't throw - just continue
+                }
                 
                 // Add to conversation history
                 conv!.conversationHistory.push({
@@ -238,6 +323,9 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
                 // Continue with next action instead of breaking
               }
             }
+            
+            // Set tool call end timing
+            waterfall.toolCallEnd = Date.now()
           }
         } else if (conv!.provider === 'cerebras') {
           // Use Cerebras with tool calling support
@@ -250,12 +338,12 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           const messages: any[] = [
             {
               role: "system",
-              content: "You are a computer automation assistant. You control a remote desktop (1024x768 pixels) through the computer_action function. Always pass numeric values (not strings) for duration and scroll_amount. Use the computer_action function to perform tasks on the desktop. IMPORTANT: When using the 'key' action, press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab' - these are not supported. Coordinate clicks within the 1024x768 display area."
+              content: "You are a computer automation assistant controlling an Ubuntu 22.04 LTS desktop (1024x768 pixels). You can perform actions like clicking, typing, scrolling, taking screenshots, and waiting. Always respond with a JSON object containing an 'actions' array. Each action should have an 'action' field (screenshot, left_click, right_click, double_click, type, key, scroll, wait) and appropriate parameters (coordinate array for clicks, text for typing, key for key presses, etc.). Always pass numeric values (not strings) for duration and scroll_amount. IMPORTANT: For Ubuntu shortcuts, use the full shortcut as a single key (e.g., 'ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+z', 'ctrl+w') - do NOT send separate key presses for 'ctrl' and the letter. Coordinate clicks within the 1024x768 display area. Use double_click to open applications and files. CRITICAL: WAITING IS NOT AN OPTION. You must take proactive actions to complete the task. Do not just wait or take screenshots - actually DO something to accomplish the goal. Be aggressive and take multiple actions per response. If you see a terminal, type commands. If you see an application, interact with it. If you see text, type it. ALWAYS TAKE ACTION."
             },
             { role: "user", content: fullInstruction }
           ]
           
-          const modelCallStart = Date.now()
+          waterfall.modelCallStart = Date.now()
           const response = await client.chat.completions.create({
             model: "llama-4-maverick-17b-128e-instruct", //"qwen-3-235b-a22b-instruct-2507",
             messages,
@@ -264,14 +352,17 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
             max_tokens: 4096,
             stream: false
           })
-          const modelCallEnd = Date.now()
+          waterfall.modelCallEnd = Date.now()
           modelCallMetrics.count++
-          modelCallMetrics.totalTime += (modelCallEnd - modelCallStart)
+          modelCallMetrics.totalTime += (waterfall.modelCallEnd - waterfall.modelCallStart)
           
           const assistantMsg = response.choices[0].message
           
           // Process tool calls if any
           if (assistantMsg.tool_calls?.length) {
+            // Set tool call timing
+            waterfall.toolCallStart = Date.now()
+            
             for (const call of assistantMsg.tool_calls) {
               try {
                 // Parse the function arguments
@@ -313,6 +404,9 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
                 // Continue with next tool call instead of breaking
               }
             }
+            
+            // Set tool call end timing
+            waterfall.toolCallEnd = Date.now()
           }
         }
 
@@ -333,6 +427,9 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
           avgTime: metrics.count > 0 ? (metrics.totalTime / metrics.count).toFixed(2) : '0.00'
         }))
 
+        // Calculate final waterfall timing
+        waterfall.actionExecution = Date.now()
+
         // Send completion event with step information, updated history, and metrics
         controller.enqueue(
           `event: step_complete\ndata:${JSON.stringify({ 
@@ -346,6 +443,9 @@ CONTINUE FROM WHERE YOU LEFT OFF. Do not repeat any of the above steps. Take the
               actionCount: actionCount,
               actionsPerSecond: actionsPerSecond,
               provider: conv!.provider,
+              waterfall,
+              toolCalls,
+              modelCalls,
               modelCallMetrics: {
                 count: modelCallMetrics.count,
                 totalTime: modelCallMetrics.totalTime,

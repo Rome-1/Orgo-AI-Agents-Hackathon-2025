@@ -4,7 +4,7 @@ export const computerTool = {
   function: {
     name: "computer_action",
     description:
-      "Execute computer actions on the shared Orgo desktop (1024x768 pixels). Use this function to interact with the computer by clicking, typing, scrolling, taking screenshots, or waiting. IMPORTANT: For key actions, press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab'. Coordinate clicks within the 1024x768 display area.",
+      "Execute computer actions on the Ubuntu 22.04 LTS desktop (1024x768 pixels). Use this function to interact with the computer by clicking, typing, scrolling, taking screenshots, or waiting. CRITICAL: WAITING IS NOT AN OPTION. You must take proactive actions to complete the task. IMPORTANT: For key actions, press only ONE key at a time (e.g., 'a', 'enter', 'space'). For Ubuntu shortcuts, use 'ctrl' key (e.g., 'ctrl+c' for copy). Coordinate clicks within the 1024x768 display area. PREFER CLICKING OVER SHORTCUTS: Use left_click and double_click to interact with UI elements instead of keyboard shortcuts when possible. Use double_click to open applications and files.",
     parameters: {
       type: "object",
       properties: {
@@ -31,7 +31,7 @@ export const computerTool = {
         },
         text: { 
           type: "string",
-          description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). Do not use shortcuts like 'ctrl+c' or 'command+w' - press only one key at a time."
+          description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). For Ubuntu shortcuts, use the full shortcut as a single key (e.g., 'ctrl+c', 'ctrl+w', 'ctrl+v') - do NOT send separate key presses for 'ctrl' and the letter."
         },
         scroll_direction: {
           type: "string",
@@ -59,7 +59,7 @@ export const cerebrasComputerTool = {
     name: "computer_action",
     strict: true,
     description:
-      "Execute computer actions on the shared Orgo desktop (1024x768 pixels). Use this function to interact with the computer by clicking, typing, scrolling, taking screenshots, or waiting. IMPORTANT: For key actions, press only ONE key at a time (e.g., 'a', 'enter', 'space'). Do NOT use shortcuts like 'ctrl+c', 'command+w', or 'alt+tab'. Coordinate clicks within the 1024x768 display area.",
+      "Execute computer actions on the Ubuntu 22.04 LTS desktop (1024x768 pixels). Use this function to interact with the computer by clicking, typing, scrolling, taking screenshots, or waiting. CRITICAL: WAITING IS NOT AN OPTION. You must take proactive actions to complete the task. Be aggressive and take multiple actions per response. If you see a terminal, type commands. If you see an application, interact with it. If you see text, type it. ALWAYS TAKE ACTION. IMPORTANT: For key actions, press only ONE key at a time (e.g., 'a', 'enter', 'space'). For Ubuntu shortcuts, use 'ctrl' key (e.g., 'ctrl+c' for copy, 'ctrl+v' for paste, 'ctrl+x' for cut, 'ctrl+z' for undo, 'ctrl+w' for close). Coordinate clicks within the 1024x768 display area. PREFER CLICKING OVER SHORTCUTS: Use left_click and double_click to interact with UI elements instead of keyboard shortcuts when possible. Use double_click to open applications and files.",
     parameters: {
       type: "object",
       properties: {
@@ -87,7 +87,7 @@ export const cerebrasComputerTool = {
         },
         text: { 
           type: "string",
-          description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). Do not use shortcuts like 'ctrl+c' or 'command+w' - press only one key at a time."
+          description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). For Ubuntu shortcuts, use the full shortcut as a single key (e.g., 'ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+z', 'ctrl+w') - do NOT send separate key presses for 'ctrl' and the letter."
         },
         scroll_direction: {
           type: "string",
@@ -141,7 +141,7 @@ export const computerActionSchema = {
           },
           text: { 
             type: "string",
-            description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). Do not use shortcuts like 'ctrl+c' or 'command+w' - press only one key at a time."
+            description: "Text to type or single key to press (e.g., 'a', 'enter', 'space'). For Ubuntu shortcuts, use the full shortcut as a single key (e.g., 'ctrl+c', 'ctrl+v', 'ctrl+x', 'ctrl+z', 'ctrl+w') - do NOT send separate key presses for 'ctrl' and the letter."
           },
           scroll_direction: {
             type: "string",
@@ -160,11 +160,11 @@ export const computerActionSchema = {
         required: ["action"],
         additionalProperties: false
       },
-      description: "Array of computer actions to execute"
+      description: "Array of computer actions to execute. CRITICAL: WAITING IS NOT AN OPTION. You must take proactive actions to complete the task. Be aggressive and take multiple actions per response. If you see a terminal, type commands. If you see an application, interact with it. If you see text, type it. ALWAYS TAKE ACTION."
     },
     reasoning: {
       type: "string",
-      description: "Brief explanation of what actions are being taken and why"
+      description: "Brief explanation of what actions are being taken and why. Focus on the aggressive actions being taken to accomplish the task."
     }
   },
   required: ["actions"],
@@ -180,10 +180,15 @@ export async function execTool(computer: any, args: any) {
     }
 
     // Coerce coordinates to numbers if they're strings
-    if (args.coordinate && Array.isArray(args.coordinate)) {
-      args.coordinate = args.coordinate.map((coord: any) => 
+    const coordField = args.coordinate || args.coords || args.coordinates;
+    if (coordField && Array.isArray(coordField)) {
+      const coercedCoords = coordField.map((coord: any) => 
         typeof coord === 'string' ? parseFloat(coord) : coord
       );
+      // Update all possible coordinate fields
+      if (args.coordinate) args.coordinate = coercedCoords;
+      if (args.coords) args.coords = coercedCoords;
+      if (args.coordinates) args.coordinates = coercedCoords;
     }
 
     switch (args.action) {
@@ -196,27 +201,30 @@ export async function execTool(computer: any, args: any) {
         };
 
       case "left_click":
-        await computer.leftClick(args.coordinate[0], args.coordinate[1]);
+        const leftClickCoords = args.coordinate || args.coords || args.coordinates;
+        await computer.leftClick(leftClickCoords[0], leftClickCoords[1]);
         return { 
           type: "tool_result",
           action: "left_click", 
-          coordinate: args.coordinate 
+          coordinate: leftClickCoords 
         };
 
       case "right_click":
-        await computer.rightClick(args.coordinate[0], args.coordinate[1]);
+        const rightClickCoords = args.coordinate || args.coords || args.coordinates;
+        await computer.rightClick(rightClickCoords[0], rightClickCoords[1]);
         return { 
           type: "tool_result",
           action: "right_click", 
-          coordinate: args.coordinate 
+          coordinate: rightClickCoords 
         };
 
       case "double_click":
-        await computer.doubleClick(args.coordinate[0], args.coordinate[1]);
+        const doubleClickCoords = args.coordinate || args.coords || args.coordinates;
+        await computer.doubleClick(doubleClickCoords[0], doubleClickCoords[1]);
         return { 
           type: "tool_result",
           action: "double_click", 
-          coordinate: args.coordinate 
+          coordinate: doubleClickCoords 
         };
 
       case "type":
@@ -252,7 +260,19 @@ export async function execTool(computer: any, args: any) {
           'home': 'Home',
           'end': 'End',
           'pageup': 'PageUp',
-          'pagedown': 'PageDown'
+          'pagedown': 'PageDown',
+          // Ubuntu shortcuts
+          'ctrl': 'Ctrl',
+          'ctrl+c': 'Ctrl+c',
+          'ctrl+v': 'Ctrl+v',
+          'ctrl+x': 'Ctrl+x',
+          'ctrl+z': 'Ctrl+z',
+          'ctrl+w': 'Ctrl+w',
+          'ctrl+t': 'Ctrl+t',
+          'ctrl+n': 'Ctrl+n',
+          'ctrl+m': 'Ctrl+m',
+          'ctrl+tab': 'Ctrl+Tab',
+          'ctrl+shift+tab': 'Ctrl+Shift+Tab'
         };
         
         const mappedKey = keyMap[keyValue.toLowerCase()] || keyValue;

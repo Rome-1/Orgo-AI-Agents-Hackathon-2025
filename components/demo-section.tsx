@@ -32,6 +32,41 @@ export function DemoSection() {
       avgTime: string
     }>
   } | null>(null)
+  
+  // Comprehensive performance tracking state
+  const [performanceProfiles, setPerformanceProfiles] = useState<Array<{
+    id: string
+    timestamp: Date
+    provider: string
+    speed: number
+    delayMs: number
+    totalTime: number
+    actionCount: number
+    actionsPerSecond: string
+    waterfall: {
+      apiServerHit: number
+      orgoInstantiation: number
+      modelCallStart: number
+      modelCallEnd: number
+      toolCallStart: number
+      toolCallEnd: number
+      actionExecution: number
+    }
+    toolCalls: Array<{
+      type: string
+      startTime: number
+      endTime: number
+      duration: number
+      success: boolean
+      error?: string
+    }>
+    modelCalls: Array<{
+      startTime: number
+      endTime: number
+      duration: number
+      tokensUsed?: number
+    }>
+  }>>([])
   const [disableDelays, setDisableDelays] = useState(false)
   const eventSourceRef = useRef<EventSource | null>(null)
   const sliderRef = useRef<HTMLInputElement>(null)
@@ -99,7 +134,7 @@ export function DemoSection() {
       if (isRunning) {
         await getCurrentScreenshot()
       }
-    }, 2000) // Update every 2 seconds
+    }, 500) // Update every 2 seconds
 
     try {
       const response = await fetch(endpoint, {
@@ -147,23 +182,36 @@ export function DemoSection() {
             try {
               const data = JSON.parse(line.slice(5))
               console.log("Received event data:", { type: currentEventType, data })
-              setEvents(prev => [...prev, { type: currentEventType, ...data }])
               
-              // Update screenshot if available
-              if (data.screenshot) {
+              // Filter out screenshot data from event display
+              let displayData = data
+              if (currentEventType === 'screenshot') {
+                // Keep screenshot functionality but don't display the full data
+                displayData = {
+                  ...data,
+                  screenshot: '[Screenshot Data]', // Replace base64 with placeholder
+                  data: '[Screenshot Data]' // Also replace data field if present
+                }
+                
+                // Update screenshot state for display (keep the original data for functionality)
+                if (data.screenshot) {
+                  console.log("Updating screenshot from data.screenshot, length:", data.screenshot.length)
+                  const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
+                  console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
+                  setScreenshot(newScreenshot)
+                  setHasImage(true)
+                }
+              }
+              
+              // Add event to stream (with filtered data for screenshots)
+              setEvents(prev => [...prev, { type: currentEventType, ...displayData }])
+              
+              // Update screenshot if available (for non-screenshot events)
+              if (data.screenshot && currentEventType !== 'screenshot') {
                 console.log("Updating screenshot from data.screenshot, length:", data.screenshot.length)
                 const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
                 console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
                 setScreenshot(newScreenshot)
-              }
-              
-              // Handle screenshot events specifically
-              if (currentEventType === 'screenshot' && data.screenshot) {
-                console.log("Updating screenshot from screenshot event, length:", data.screenshot.length)
-                const newScreenshot = `data:image/jpeg;base64,${data.screenshot}`
-                console.log("Setting screenshot to:", newScreenshot.substring(0, 50) + "...")
-                setScreenshot(newScreenshot)
-                setHasImage(true) // Ensure the image is marked as available
               }
               
               // Handle agent-specific events
@@ -189,6 +237,30 @@ export function DemoSection() {
                 if (data.metrics) {
                   console.log("Received completion metrics:", data.metrics)
                   setMetrics(data.metrics)
+                  
+                  // Add to performance profiles
+                  const profile = {
+                    id: crypto.randomUUID(),
+                    timestamp: new Date(),
+                    provider: provider,
+                    speed: speed,
+                    delayMs: Math.max(0, 2000 - (speed * 20)),
+                    totalTime: data.metrics.totalTime || 0,
+                    actionCount: data.metrics.actionCount || 0,
+                    actionsPerSecond: data.metrics.actionsPerSecond || '0.00',
+                    waterfall: data.metrics.waterfall || {
+                      apiServerHit: 0,
+                      orgoInstantiation: 0,
+                      modelCallStart: 0,
+                      modelCallEnd: 0,
+                      toolCallStart: 0,
+                      toolCallEnd: 0,
+                      actionExecution: 0
+                    },
+                    toolCalls: data.metrics.toolCalls || [],
+                    modelCalls: data.metrics.modelCalls || []
+                  }
+                  setPerformanceProfiles(prev => [profile, ...prev.slice(0, 9)]) // Keep last 10
                 }
               }
             } catch (e) {
@@ -211,8 +283,8 @@ export function DemoSection() {
   const handlePlay = async () => {
     if (!inputText.trim()) return
     
-    // Convert speed to delay (inverse relationship)
-    const delayMs = Math.max(100, 2000 - (speed * 20))
+    // Convert speed to delay (inverse relationship) - max speed = 0 delay
+    const delayMs = Math.max(0, 2000 - (speed * 20))
     
     console.log("Playing with provider:", provider)
     
@@ -465,27 +537,6 @@ export function DemoSection() {
                 </div>
               </div>
 
-              {/* Model Call Metrics */}
-              {metrics.modelCallMetrics && (
-                <div className="mb-6 p-4 bg-white rounded-lg border border-slate-200">
-                  <h4 className="text-md font-bold mb-3 text-slate-800">Model Call Performance</h4>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="text-center">
-                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.count}</div>
-                      <div className="text-sm text-slate-600">Calls</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.totalTime}ms</div>
-                      <div className="text-sm text-slate-600">Total Time</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-xl font-bold text-inde">{metrics.modelCallMetrics.avgTime}ms</div>
-                      <div className="text-sm text-slate-600">Avg/Call</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {/* Action Type Breakdown */}
               {metrics.actionTypeBreakdown && metrics.actionTypeBreakdown.length > 0 && (
                 <div className="p-4 bg-white rounded-lg border border-slate-200">
@@ -503,7 +554,7 @@ export function DemoSection() {
             </div>
           )}
 
-          {/* Speed Report */}
+                    {/* Speed Report */}
           <div className="mb-8 mt-8 bg-gradient-to-r from-inde/20 to-blue-500/20 rounded-xl p-6 border-2 border-inde/30">
             <h3 className="text-lg font-bold mb-4 text-slate-900">Speed Report</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -512,7 +563,7 @@ export function DemoSection() {
                 <div className="text-sm text-slate-600">Speed Setting</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-bold text-inde">{Math.max(100, 2000 - (speed * 20))}ms</div>
+                <div className="text-2xl font-bold text-inde">{Math.max(0, 2000 - (speed * 20))}ms</div>
                 <div className="text-sm text-slate-600">Delay Between Actions</div>
               </div>
               <div className="text-center">
@@ -525,6 +576,111 @@ export function DemoSection() {
               </div>
             </div>
           </div>
+
+          {/* Performance Profiling Tools */}
+          {performanceProfiles.length > 0 && (
+            <div className="mb-8 mt-8 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-xl p-6 border-2 border-purple-300">
+              <h3 className="text-lg font-bold mb-4 text-slate-900">Performance Profiling History</h3>
+              <div className="space-y-3 max-h-64 overflow-y-auto">
+                {performanceProfiles.map((profile, index) => (
+                  <div key={profile.id} className="bg-white rounded-lg p-4 border border-slate-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-sm font-bold text-slate-600">
+                          #{index + 1}
+                        </span>
+                        <span className="text-sm text-slate-500">
+                          {profile.timestamp.toLocaleTimeString()}
+                        </span>
+                        <span className={`px-2 py-1 rounded text-xs font-bold ${
+                          profile.provider === 'anthropic' ? 'bg-blue-100 text-blue-800' :
+                          profile.provider === 'groq' ? 'bg-green-100 text-green-800' :
+                          'bg-purple-100 text-purple-800'
+                        }`}>
+                          {profile.provider}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-bold text-inde">Speed {profile.speed}</div>
+                        <div className="text-xs text-slate-500">{profile.delayMs}ms delay</div>
+                      </div>
+                    </div>
+                    
+                                          <div className="grid grid-cols-4 gap-3 text-center">
+                        <div>
+                          <div className="text-sm font-bold text-slate-900">{profile.totalTime}ms</div>
+                          <div className="text-xs text-slate-600">Total Time</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-slate-900">{profile.actionCount}</div>
+                          <div className="text-xs text-slate-600">Actions</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-slate-900">{profile.actionsPerSecond}/s</div>
+                          <div className="text-xs text-slate-600">Actions/Second</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-slate-900">{profile.toolCalls?.length || 0}</div>
+                          <div className="text-xs text-slate-600">Tool Calls</div>
+                        </div>
+                      </div>
+                      
+                      {/* Waterfall Timeline */}
+                      {profile.waterfall && (
+                        <div className="mt-3 pt-3 border-t border-slate-200">
+                          <div className="text-xs font-bold text-slate-600 mb-2">Waterfall Timeline</div>
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-xs">
+                              <span>Model Call Start</span>
+                              <span className="font-mono">{profile.waterfall.modelCallStart - profile.waterfall.apiServerHit}ms</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span>Model Call End</span>
+                              <span className="font-mono">{profile.waterfall.modelCallEnd - profile.waterfall.apiServerHit}ms</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span>Action Execution</span>
+                              <span className="font-mono">{profile.waterfall.actionExecution - profile.waterfall.apiServerHit}ms</span>
+                            </div>
+                          </div>
+                          
+                          {/* Performance Breakdown */}
+                          <div className="mt-3 pt-3 border-t border-slate-200">
+                            <div className="text-xs font-bold text-slate-600 mb-2">Performance Breakdown</div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-xs">
+                                <span>Model Call Duration</span>
+                                <span className="font-mono">{profile.waterfall.modelCallEnd - profile.waterfall.modelCallStart}ms</span>
+                              </div>
+                              <div className="flex justify-between text-xs">
+                                <span>Total Execution Time</span>
+                                <span className="font-mono">{profile.waterfall.actionExecution - profile.waterfall.apiServerHit}ms</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                ))}
+              </div>
+              
+              {performanceProfiles.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-slate-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-slate-600">
+                      Showing last {performanceProfiles.length} runs
+                    </span>
+                    <button
+                      onClick={() => setPerformanceProfiles([])}
+                      className="px-3 py-1 bg-red-500 text-white rounded-lg text-sm font-bold hover:bg-red-600 transition-colors"
+                    >
+                      Clear History
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Event Stream */}
           {events.length > 0 && (
