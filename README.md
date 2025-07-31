@@ -65,7 +65,8 @@ CEREBRAS_API_KEY=your_cerebras_key
 - Progress tracking and status updates
 
 ### Advanced Controls
-- Speed slider for execution timing
+- Speed slider for execution timing and option to disable
+- Step through agentic behavior, pause, or reset.
 - Provider selection (Anthropic/Groq/Cerebras)
 - Manual screenshot refresh
 
@@ -77,7 +78,7 @@ The application uses a modular architecture with:
 - **Provider Abstraction**: Unified interface for different AI providers
 - **Speed Benchmarking Across Models and Actions**: Built-in metrics and profiling tools track execution speed, action breakdowns, and model call performance across different providers and settings.
 
-## Speed Profile Results
+## Experimental Results (Speed Profile)
 
 Task: Various opening and closing of programs and typing hello world into the terminal.
 
