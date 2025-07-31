@@ -87,7 +87,7 @@ Groq (running llama-4-maverick-17b-128e-instruct): Average: 0.11 actions/second 
 
 Cerebras (running llama-4-maverick-17b-128e-instruct): Average: 0.135 actions/second (range of 0.11 to 0.16 across multiple runs of the same task, but far more reliable than Groq, reliability comparable to Anthropic)
 
-**Takeaways**: due to native computer use support, Anthropic is the most reliable, but Cerebras is a close second and the best compromise between speed and performance. Both Groq and Cerebras are massive speed improvements compared to Anthropic.
+**Takeaways**: due to native computer use support, Anthropic is the most reliable, with Cerebras second and the best compromise between speed and performance. Both Groq and Cerebras are massive speed improvements compared to Anthropic.
 
 ## Contributing
 
