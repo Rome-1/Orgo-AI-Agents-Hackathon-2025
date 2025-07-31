@@ -24,13 +24,13 @@ Applications include:
 ### For Developers
 - **Streaming Results**: Real-time streaming from Orgo straight to Next.js
 - **Fine-grained Control**: Step-through AI actions with precision
-- **Massive Speed**: Groq and Cerebras integrations for >100% inference runtime improvement (hopefully)
+- **Massive Speed**: Groq and Cerebras integrations for >100% speed improvement (demonstrated, see Experimentation section below)
 
 ## Technical Stack
 
 - **Frontend**: Next.js with Tailwind CSS
 - **AI Integration**: Orgo AI for desktop automation
-- **Providers**: Anthropic (Claude), Groq (WIP), and Cerebras support
+- **Providers**: Anthropic (Claude), Groq (somewhat reliable), and Cerebras (solidly reliable) support
 - **Real-time**: Server-Sent Events for live streaming
 
 ## Getting Started
